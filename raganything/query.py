@@ -7,7 +7,7 @@ Contains all query-related methods for both text and multimodal queries
 import json
 import hashlib
 import re
-from typing import Dict, List, Any
+from typing import Any, Dict, List, Tuple
 from pathlib import Path
 from lightrag import QueryParam
 from lightrag.utils import always_get_an_event_loop
@@ -159,6 +159,155 @@ class QueryMixin:
 
         self.logger.info("Text query completed")
         return result
+
+    async def aquery_with_references(
+        self,
+        query: str,
+        mode: str = "mix",
+        system_prompt: str | None = None,
+        vlm_enhanced: bool | None = None,
+        **kwargs,
+    ) -> Tuple[str, List[Dict[str, Any]]]:
+        """
+        Query with retrieval references (chunks) returned.
+
+        Calls LightRAG's aquery_llm to obtain structured raw_data, then extracts
+        both the answer and the retrieved document chunks as references.
+
+        Args:
+            query: Query text
+            mode: Query mode ("local", "global", "hybrid", "naive", "mix", "bypass")
+            system_prompt: Optional system prompt
+            vlm_enhanced: If True and vision_model_func available, use VLM for
+                image-in-context queries. Defaults to same as aquery.
+            **kwargs: Other QueryParam parameters
+
+        Returns:
+            Tuple[str, List[dict]]: (answer_text, references)
+                references: list of chunk dicts with keys:
+                    - content: chunk text
+                    - file_path: source path
+                    - chunk_id: chunk identifier
+                    - reference_id: reference number (e.g. "1", "2")
+        """
+        if self.lightrag is None:
+            raise ValueError(
+                "No LightRAG instance available. Please process documents first or "
+                "provide a pre-initialized LightRAG instance."
+            )
+
+        vlm_enhanced = (
+            vlm_enhanced
+            if vlm_enhanced is not None
+            else (
+                hasattr(self, "vision_model_func") and self.vision_model_func is not None
+            )
+        )
+
+        if vlm_enhanced and hasattr(self, "vision_model_func") and self.vision_model_func:
+            return await self._aquery_with_references_vlm(
+                query, mode=mode, system_prompt=system_prompt, **kwargs
+            )
+
+        # Non-VLM path: call aquery_llm for full structured result
+        query_param = QueryParam(mode=mode, **kwargs)
+        self.logger.info(f"Executing text query with references: {query[:100]}...")
+
+        raw_result = await self.lightrag.aquery_llm(
+            query, param=query_param, system_prompt=system_prompt
+        )
+
+        answer = ""
+        references: List[Dict[str, Any]] = []
+
+        if raw_result.get("status") == "success":
+            llm_resp = raw_result.get("llm_response", {})
+            answer = llm_resp.get("content") or ""
+            data = raw_result.get("data", {})
+            chunks = data.get("chunks", [])
+            references = [
+                {
+                    "content": c.get("content", ""),
+                    "file_path": c.get("file_path", ""),
+                    "chunk_id": c.get("chunk_id", ""),
+                    "reference_id": c.get("reference_id", ""),
+                }
+                for c in chunks
+            ]
+
+        if not answer and raw_result.get("status") == "failure":
+            answer = raw_result.get("llm_response", {}).get("content", "")
+
+        self.logger.info(f"Text query with references completed, {len(references)} refs")
+        return answer, references
+
+    async def _aquery_with_references_vlm(
+        self,
+        query: str,
+        mode: str = "mix",
+        system_prompt: str | None = None,
+        extra_safe_dirs: List[str] = None,
+        **kwargs,
+    ) -> Tuple[str, List[Dict[str, Any]]]:
+        """VLM-enhanced path: use aquery_llm with only_need_prompt to get raw_data."""
+        await self._ensure_lightrag_initialized()
+
+        self.logger.info(f"Executing VLM enhanced query with references: {query[:100]}...")
+
+        if hasattr(self, "_current_images_base64"):
+            delattr(self, "_current_images_base64")
+
+        query_param = QueryParam(mode=mode, only_need_prompt=True, **kwargs)
+        raw_result = await self.lightrag.aquery_llm(
+            query, param=query_param, system_prompt=system_prompt
+        )
+
+        raw_prompt = raw_result.get("llm_response", {}).get("content", "")
+        data = raw_result.get("data", {})
+        chunks = data.get("chunks", [])
+        references = [
+            {
+                "content": c.get("content", ""),
+                "file_path": c.get("file_path", ""),
+                "chunk_id": c.get("chunk_id", ""),
+                "reference_id": c.get("reference_id", ""),
+            }
+            for c in chunks
+        ]
+
+        enhanced_prompt, images_found = await self._process_image_paths_for_vlm(
+            raw_prompt, extra_safe_dirs=extra_safe_dirs
+        )
+
+        if not images_found:
+            self.logger.info("No valid images found, falling back to normal query")
+            query_param = QueryParam(mode=mode, **kwargs)
+            raw_result = await self.lightrag.aquery_llm(
+                query, param=query_param, system_prompt=system_prompt
+            )
+            answer = raw_result.get("llm_response", {}).get("content", "")
+            if raw_result.get("status") == "success":
+                data = raw_result.get("data", {})
+                references = [
+                    {
+                        "content": c.get("content", ""),
+                        "file_path": c.get("file_path", ""),
+                        "chunk_id": c.get("chunk_id", ""),
+                        "reference_id": c.get("reference_id", ""),
+                    }
+                    for c in data.get("chunks", [])
+                ]
+            return answer, references
+
+        messages = self._build_vlm_messages_with_images(
+            enhanced_prompt, query, system_prompt
+        )
+        answer = await self._call_vlm_with_multimodal_content(messages)
+
+        self.logger.info(
+            f"VLM enhanced query with references completed, {len(references)} refs"
+        )
+        return answer, references
 
     async def aquery_with_multimodal(
         self,

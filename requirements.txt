@@ -5,6 +5,8 @@ lightrag-hku
 mineru[core]
 # Progress bars for batch processing
 tqdm
+# HTTP client for Qwen qwen3-rerank 调用
+requests
 # Note: Optional dependencies are now defined in setup.py extras_require:
 # - [image]: Pillow>=10.0.0 (for BMP, TIFF, GIF, WebP format conversion)
 # - [text]: reportlab>=4.0.0 (for TXT, MD to PDF conversion)
@@ -13,3 +15,6 @@ tqdm
 # - [all]: includes all optional dependencies
 #
 # Install with: pip install raganything[image,text] or pip install raganything[all]
+fastapi[standard]
+uvicorn 
+python-multipart
