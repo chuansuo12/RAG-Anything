@@ -5,93 +5,191 @@
   <title>RAGAnything Web UI</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script src="https://cdn.tailwindcss.com"></script>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/vis-network/styles/vis-network.min.css"
+  />
 </head>
 <body class="bg-slate-950 text-slate-100">
   <div class="min-h-screen flex flex-col">
     <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur">
-      <div class="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between gap-4">
+      <div class="w-full px-4 lg:px-8 py-4 flex items-center justify-between gap-4">
         <div class="flex items-center gap-3">
           <div class="w-9 h-9 rounded-xl bg-cyan-500/20 flex items-center justify-center border border-cyan-400/40">
             <span class="text-cyan-300 font-semibold">R</span>
           </div>
           <div>
             <h1 class="text-lg font-semibold tracking-tight">RAGAnything Web</h1>
-            <p class="text-xs text-slate-400">上传 PDF · 自动解析 · 图文混合 RAG 问答</p>
+            <p class="text-xs text-slate-400">构建知识库 · 图文混合 RAG 问答</p>
           </div>
         </div>
         <div class="flex items-center gap-3 text-xs text-slate-400">
+          <div class="inline-flex rounded-lg bg-slate-900/80 border border-slate-700 overflow-hidden">
+            <button id="tab-qa" class="px-3 py-1 text-xs font-medium bg-slate-100 text-slate-900">
+              知识问答
+            </button>
+            <button id="tab-kb" class="px-3 py-1 text-xs font-medium bg-transparent text-slate-300 hover:bg-slate-800/80">
+              知识库管理
+            </button>
+          </div>
           <span id="status-indicator" class="px-2 py-1 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-400/30">就绪</span>
         </div>
       </div>
     </header>
 
-    <main class="flex-1 max-w-6xl mx-auto w-full px-4 py-4 flex gap-4">
-      <!-- Sidebar: conversation history -->
-      <aside class="w-64 flex-shrink-0 bg-slate-900/70 border border-slate-800 rounded-xl p-3 flex flex-col gap-3">
-        <div class="flex items-center justify-between gap-2 mb-1">
-          <h2 class="text-sm font-semibold text-slate-200">会话历史</h2>
-          <button id="new-conversation-btn" class="text-xs px-2 py-1 rounded-md bg-cyan-500 text-slate-900 hover:bg-cyan-400">
-            新建会话
-          </button>
+    <main class="flex-1 w-full px-4 lg:px-8 py-4 flex flex-col lg:flex-row gap-4">
+      <!-- Sidebar -->
+      <aside class="w-full lg:w-64 lg:flex-shrink-0 bg-slate-900/70 border border-slate-800 rounded-xl p-3 flex flex-col gap-3">
+        <!-- Sidebar for Q&A -->
+        <div id="sidebar-qa" class="flex flex-col gap-3 h-full">
+          <div class="flex items-center justify-between gap-2 mb-1">
+            <h2 class="text-sm font-semibold text-slate-200">会话历史</h2>
+            <button id="new-conversation-btn" class="text-xs px-2 py-1 rounded-md bg-cyan-500 text-slate-900 hover:bg-cyan-400">
+              新建会话
+            </button>
+          </div>
+          <div id="conversation-list" class="flex-1 overflow-y-auto space-y-1 text-sm">
+            <!-- Filled by JS -->
+          </div>
         </div>
-        <div id="conversation-list" class="flex-1 overflow-y-auto space-y-1 text-sm">
-          <!-- Filled by JS -->
+        <!-- Sidebar for knowledge base management -->
+        <div id="sidebar-kb" class="flex flex-col gap-3 h-full hidden">
+          <div class="flex items-center justify-between gap-2 mb-1">
+            <h2 class="text-sm font-semibold text-slate-200">知识库列表</h2>
+            <button
+              id="kb-add-btn"
+              type="button"
+              class="w-6 h-6 inline-flex items-center justify-center rounded-md border border-slate-700 text-slate-200 hover:bg-slate-800 hover:border-slate-500 text-sm leading-none"
+              title="新增知识库（上传 PDF）"
+            >
+              +
+            </button>
+          </div>
+          <div id="kb-list" class="flex-1 overflow-y-auto space-y-1 text-sm">
+            <!-- Filled by JS -->
+          </div>
         </div>
       </aside>
 
       <!-- Main area -->
       <section class="flex-1 flex flex-col gap-3">
-        <!-- Document selection & upload -->
-        <div class="bg-slate-900/70 border border-slate-800 rounded-xl p-4 flex flex-col gap-3">
-          <h2 class="text-sm font-semibold text-slate-200 mb-1">文档选择与上传</h2>
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <!-- Q&A view -->
+        <div id="view-qa" class="flex flex-col gap-3">
+          <!-- Knowledge base selection for Q&A -->
+          <div class="bg-slate-900/70 border border-slate-800 rounded-xl p-4 flex flex-col gap-3">
+            <h2 class="text-sm font-semibold text-slate-200 mb-1">问答使用的知识库</h2>
             <div class="space-y-2">
-              <label class="block text-xs text-slate-400 mb-1">已解析的 PDF</label>
+              <label class="block text-xs text-slate-400 mb-1">已构建的知识库（解析完成的 PDF）</label>
               <select id="doc-select" class="w-full rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500">
-                <option value="">选择一个已有文档...</option>
+                <option value="">选择一个已有知识库...</option>
               </select>
-              <p class="text-xs text-slate-500">新建会话时可以直接关联选中的解析结果。</p>
-            </div>
-            <div class="space-y-2">
-              <label class="block text-xs text-slate-400 mb-1">上传新的 PDF</label>
-              <div class="flex items-center gap-2">
-                <input id="pdf-file" type="file" accept="application/pdf" class="flex-1 text-xs text-slate-300 file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-cyan-500 file:text-slate-900 hover:file:bg-cyan-400" />
-                <button id="upload-btn" class="px-3 py-1.5 rounded-md bg-emerald-500 text-slate-900 text-xs font-medium hover:bg-emerald-400">
-                  上传并解析
-                </button>
-              </div>
-              <p class="text-xs text-slate-500">上传后会自动调用 MinerU + RAGAnything 进行解析与索引构建。</p>
+              <p class="text-xs text-slate-500">新建会话时会绑定当前选择的知识库，用于后续问答召回。</p>
             </div>
           </div>
-          <div class="mt-2">
-            <label class="block text-xs text-slate-400 mb-1">解析日志</label>
-            <pre id="parse-log" class="h-28 overflow-y-auto text-xs bg-slate-950 border border-slate-800 rounded-lg p-2 text-slate-300 whitespace-pre-wrap"></pre>
+
+          <!-- Chat area -->
+          <div class="flex-1 bg-slate-900/70 border border-slate-800 rounded-xl flex flex-col">
+            <div class="border-b border-slate-800 px-4 py-2 flex items-center justify-between gap-3">
+              <div>
+                <p id="current-conversation-title" class="text-sm font-semibold text-slate-100">新会话尚未创建</p>
+                <p id="current-doc-label" class="text-xs text-slate-400">请先在上方选择一个知识库，然后在下方输入你的第一个问题，系统会自动为你创建会话。</p>
+              </div>
+            </div>
+
+            <div id="chat-messages" class="flex-1 overflow-y-auto px-4 py-3 space-y-3 text-sm">
+              <!-- messages -->
+            </div>
+
+            <div class="border-t border-slate-800 px-4 py-3">
+              <form id="chat-form" class="flex items-end gap-3">
+                <textarea id="chat-input" rows="2" placeholder="在此输入你的问题..." class="flex-1 resize-none rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"></textarea>
+                <button type="submit" id="send-btn" class="h-9 px-4 rounded-md bg-cyan-500 text-slate-900 text-xs font-medium hover:bg-cyan-400 disabled:opacity-50 disabled:cursor-not-allowed">
+                  发送
+                </button>
+              </form>
+            </div>
           </div>
         </div>
 
-        <!-- Chat area -->
-        <div class="flex-1 bg-slate-900/70 border border-slate-800 rounded-xl flex flex-col">
-          <div class="border-b border-slate-800 px-4 py-2 flex items-center justify-between">
-            <div>
-              <p id="current-conversation-title" class="text-sm font-semibold text-slate-100">尚未选择会话</p>
-              <p id="current-doc-label" class="text-xs text-slate-400">请选择或上传 PDF 后新建会话。</p>
-            </div>
-            <button id="start-conversation-btn" class="px-3 py-1.5 rounded-md bg-cyan-500 text-slate-900 text-xs font-medium hover:bg-cyan-400">
-              使用当前文档新建会话
-            </button>
-          </div>
-
-          <div id="chat-messages" class="flex-1 overflow-y-auto px-4 py-3 space-y-3 text-sm">
-            <!-- messages -->
-          </div>
-
-          <div class="border-t border-slate-800 px-4 py-3">
-            <form id="chat-form" class="flex items-end gap-3">
-              <textarea id="chat-input" rows="2" placeholder="在此输入你的问题..." class="flex-1 resize-none rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"></textarea>
-              <button type="submit" id="send-btn" class="h-9 px-4 rounded-md bg-cyan-500 text-slate-900 text-xs font-medium hover:bg-cyan-400 disabled:opacity-50 disabled:cursor-not-allowed">
-                发送
+        <!-- Knowledge base management view -->
+        <div id="view-kb" class="flex flex-col gap-3 hidden">
+          <!-- Knowledge base overview -->
+          <div id="kb-overview-section" class="bg-slate-900/70 border border-slate-800 rounded-xl p-4 flex flex-col gap-3">
+            <div class="flex items-center justify-between gap-3">
+              <div class="flex items-center gap-2">
+                <h2 class="text-sm font-semibold text-slate-200">知识库文件概览</h2>
+                <span class="text-[11px] text-slate-400">在左侧选择一个知识库查看详情</span>
+              </div>
+              <button
+                id="kb-delete-btn"
+                type="button"
+                class="px-2 py-1.5 rounded-md bg-red-500/90 text-slate-50 text-[11px] font-medium hover:bg-red-400 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                删除当前知识库
               </button>
-            </form>
+            </div>
+            <div id="kb-detail-empty" class="text-xs text-slate-500">
+              暂未选择知识库，请在左侧列表中选择，或在下方上传新的 PDF 构建知识库。
+            </div>
+            <div id="kb-detail" class="hidden space-y-2 text-xs text-slate-300">
+              <div id="kb-detail-meta" class="whitespace-pre-wrap leading-relaxed"></div>
+              <a
+                id="kb-detail-pdf-link"
+                href="#"
+                target="_blank"
+                class="inline-flex items-center text-[11px] text-cyan-300 hover:text-cyan-200"
+              >
+                在新窗口中打开原始 PDF
+              </a>
+              <div id="kb-graph-section" class="mt-3 space-y-2">
+                <div class="flex items-center justify-between">
+                  <h3 class="text-xs font-semibold text-slate-200">知识图谱</h3>
+                  <span id="kb-graph-hint" class="text-[11px] text-slate-500">展示该知识库中抽取的实体与关系</span>
+                </div>
+                <div
+                  id="kb-graph"
+                  class="h-96 rounded-lg border border-slate-800 bg-slate-950"
+                ></div>
+                <div
+                  id="kb-graph-empty"
+                  class="text-[11px] text-slate-500 hidden"
+                >
+                  当前知识库尚未生成图数据，或图为空。
+                </div>
+                <div
+                  id="kb-graph-node-detail"
+                  class="text-[11px] text-slate-300 hidden border border-slate-800 rounded-lg p-2 bg-slate-950/70"
+                >
+                  <div class="font-semibold mb-1">节点详情</div>
+                  <pre
+                    id="kb-graph-node-detail-content"
+                    class="whitespace-pre-wrap leading-relaxed"
+                  ></pre>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Knowledge base management -->
+          <div id="kb-upload-section" class="bg-slate-900/70 border border-slate-800 rounded-xl p-4 flex flex-col gap-3 hidden">
+            <div class="flex items-center justify-between">
+              <h2 class="text-sm font-semibold text-slate-200">知识库管理</h2>
+              <span class="text-[11px] text-slate-400">在此上传 PDF，构建新的知识库</span>
+            </div>
+            <div class="space-y-2">
+              <label class="block text-xs text-slate-400 mb-1">上传新的 PDF 到知识库</label>
+              <div class="flex flex-col md:flex-row md:items-center gap-2">
+                <input id="pdf-file" type="file" accept="application/pdf" class="flex-1 text-xs text-slate-300 file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-cyan-500 file:text-slate-900 hover:file:bg-cyan-400" />
+                <button id="upload-btn" class="px-3 py-1.5 rounded-md bg-emerald-500 text-slate-900 text-xs font-medium hover:bg-emerald-400">
+                  上传并解析为知识库
+                </button>
+              </div>
+              <p class="text-xs text-slate-500">上传后会自动调用 MinerU + RAGAnything 进行解析，并构建可供问答使用的知识库索引。</p>
+            </div>
+            <div class="mt-2">
+              <label class="block text-xs text-slate-400 mb-1">解析与索引构建日志</label>
+              <pre id="parse-log" class="h-28 overflow-y-auto text-xs bg-slate-950 border border-slate-800 rounded-lg p-2 text-slate-300 whitespace-pre-wrap"></pre>
+            </div>
           </div>
         </div>
       </section>
@@ -111,7 +209,8 @@
   </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-  <script src="/static/app.js"></script>
+  <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+  <script type="module" src="/static/app.js"></script>
 </body>
 </html>
 

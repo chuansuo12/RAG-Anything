@@ -45,11 +45,35 @@ async def get_conversation(conversation_id: str) -> Dict[str, Any]:
     return conv
 
 
+@router.delete("/{conversation_id}")
+async def delete_conversation(conversation_id: str) -> Dict[str, Any]:
+    """
+    删除指定会话及其历史记录文件。
+    """
+    conv_path = _conversation_path(conversation_id)
+    conv = _read_json(conv_path, default=None)
+    if not isinstance(conv, dict):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    # 删除会话文件
+    try:
+        if conv_path.exists():
+            conv_path.unlink()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"删除会话失败: {exc}") from exc
+
+    return {
+        "conversation_id": conversation_id,
+        "doc_id": conv.get("doc_id"),
+        "deleted": True,
+    }
+
+
 @router.post("")
 async def create_conversation(payload: ConversationCreate) -> Dict[str, Any]:
     meta = _read_json(_doc_meta_path(payload.doc_id), default=None)
     if not isinstance(meta, dict) or meta.get("status") != "ready":
-        raise HTTPException(status_code=400, detail="指定的文档不存在或尚未解析完成")
+        raise HTTPException(status_code=400, detail="指定的知识库不存在或尚未解析完成")
 
     conversation_id = uuid.uuid4().hex
     now = _now_iso()
@@ -82,7 +106,7 @@ async def send_message(
     doc_id = conv.get("doc_id")
     doc_meta = _read_json(_doc_meta_path(doc_id), default=None)
     if not isinstance(doc_meta, dict) or doc_meta.get("status") != "ready":
-        raise HTTPException(status_code=400, detail="关联文档不存在或尚未解析完成")
+        raise HTTPException(status_code=400, detail="关联的知识库不存在或尚未解析完成")
 
     answer, references = await answer_question(doc_meta, question)
 

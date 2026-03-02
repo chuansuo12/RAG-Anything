@@ -11,7 +11,7 @@ from web.routes_index import router as index_router
 from web.settings import ensure_runtime_dirs
 
 
-app = FastAPI(title="RAGAnything Web UI")
+app = FastAPI(title="RAGAnything 知识库问答 Web UI")
 
 ensure_runtime_dirs()
 

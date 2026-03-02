@@ -18,3 +18,5 @@ requests
 fastapi[standard]
 uvicorn 
 python-multipart
+pandas 
+pyarrow

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+import xml.etree.ElementTree as ET
 
 from fastapi import HTTPException
 
@@ -93,15 +94,15 @@ async def answer_question(
     doc_meta: Dict[str, Any], question: str
 ) -> Tuple[str, List[Dict[str, Any]]]:
     """
-    问答并返回引用文档块。
+    基于已构建的知识库进行问答，并返回引用内容块。
 
     Returns:
         tuple: (answer_text, references)
-            references: 检索到的文档块列表，每项含 content, file_path, chunk_id, reference_id
+            references: 检索到的内容块列表，每项含 content, file_path, chunk_id, reference_id
     """
     working_dir = doc_meta.get("working_dir")
     if not working_dir:
-        raise RuntimeError("文档工作目录缺失")
+        raise RuntimeError("知识库工作目录缺失")
 
     # 使用与构建索引时一致的配置来重新加载 LightRAG 索引
     parsed_dir = doc_meta.get("parsed_dir")
@@ -172,4 +173,215 @@ async def answer_question(
     # 不改写 LLM 原始回答内容，保留其自身生成的 "### References" 区块。
     return answer, enriched
 
+
+def _load_graphml(doc_meta: Dict[str, Any]) -> ET.Element:
+    """加载并返回 graphml 根节点，供图相关函数复用。"""
+    working_dir = doc_meta.get("working_dir")
+    if not working_dir:
+        raise HTTPException(status_code=400, detail="知识库工作目录缺失，无法加载图数据")
+
+    graph_path = Path(working_dir) / "graph_chunk_entity_relation.graphml"
+    if not graph_path.exists():
+        raise HTTPException(status_code=204, detail="该知识库暂无图数据")
+
+    try:
+        tree = ET.parse(graph_path)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"解析图数据失败: {e}")
+
+    return tree.getroot()
+
+
+def get_doc_graph(doc_meta: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    从 LightRAG 的 graphml 文件中解析知识库图，返回给前端使用的 nodes/edges 结构。
+
+    这里只返回轻量级信息（不包含长描述），节点详情在点击时单独查询。
+    """
+    try:
+        root = _load_graphml(doc_meta)
+    except HTTPException as e:
+        if e.status_code == 204:
+            return {"nodes": [], "edges": []}
+        raise
+
+    ns = {"g": "http://graphml.graphdrawing.org/xmlns"}
+
+    # 收集 key -> (for, attr_name) 映射
+    key_info: Dict[str, Dict[str, str]] = {}
+    for key in root.findall("g:key", ns):
+        key_id = key.attrib.get("id")
+        attr_name = key.attrib.get("attr.name")
+        key_for = key.attrib.get("for")
+        if key_id and attr_name and key_for:
+            key_info[key_id] = {"for": key_for, "name": attr_name}
+
+    node_key_map = {k: v["name"] for k, v in key_info.items() if v["for"] == "node"}
+    edge_key_map = {k: v["name"] for k, v in key_info.items() if v["for"] == "edge"}
+
+    nodes: List[Dict[str, Any]] = []
+    for node in root.findall(".//g:node", ns):
+        node_id = node.attrib.get("id") or ""
+        attrs: Dict[str, Any] = {"id": node_id}
+        for data in node.findall("g:data", ns):
+            key_id = data.attrib.get("key")
+            attr_name = node_key_map.get(key_id)
+            if not attr_name:
+                continue
+            text = (data.text or "").strip() if data.text is not None else ""
+            attrs[attr_name] = text
+
+        label = attrs.get("entity_id") or node_id
+        node_type = attrs.get("entity_type") or ""
+        created_at_raw = attrs.get("created_at")
+        try:
+            created_at = int(created_at_raw) if created_at_raw is not None else None
+        except (TypeError, ValueError):
+            created_at = None
+
+        nodes.append(
+            {
+                "id": node_id,
+                "label": label,
+                "type": node_type,
+                "created_at": created_at,
+            }
+        )
+
+    edges: List[Dict[str, Any]] = []
+    for idx, edge in enumerate(root.findall(".//g:edge", ns)):
+        source = edge.attrib.get("source") or ""
+        target = edge.attrib.get("target") or ""
+        attrs: Dict[str, Any] = {}
+        for data in edge.findall("g:data", ns):
+            key_id = data.attrib.get("key")
+            attr_name = edge_key_map.get(key_id)
+            if not attr_name:
+                continue
+            text = (data.text or "").strip() if data.text is not None else ""
+            attrs[attr_name] = text
+
+        weight_raw = attrs.get("weight")
+        try:
+            weight = float(weight_raw) if weight_raw is not None else None
+        except (TypeError, ValueError):
+            weight = None
+
+        edges.append(
+            {
+                "id": f"{source}-{target}-{idx}",
+                "source": source,
+                "target": target,
+                "weight": weight,
+            }
+        )
+
+    # 为了避免前端在极大图上卡顿，如节点过多则做一个简单裁剪
+    max_nodes = 300
+    if len(nodes) > max_nodes:
+        nodes_sorted = sorted(
+            nodes,
+            key=lambda n: n.get("created_at") or 0,
+            reverse=True,
+        )
+        nodes = nodes_sorted[:max_nodes]
+        allowed_ids = {n["id"] for n in nodes}
+        edges = [
+            e
+            for e in edges
+            if e.get("source") in allowed_ids and e.get("target") in allowed_ids
+        ]
+
+    return {"nodes": nodes, "edges": edges}
+
+
+def get_doc_graph_node_detail(doc_meta: Dict[str, Any], node_id: str) -> Dict[str, Any]:
+    """
+    返回单个节点的详细信息及邻居列表，用于前端点击节点时按需加载。
+    """
+    if not node_id:
+        raise HTTPException(status_code=400, detail="缺少 node_id")
+
+    try:
+        root = _load_graphml(doc_meta)
+    except HTTPException as e:
+        if e.status_code == 204:
+            raise HTTPException(status_code=404, detail="该知识库暂无图数据")
+        raise
+
+    ns = {"g": "http://graphml.graphdrawing.org/xmlns"}
+
+    # 收集 key -> (for, attr_name) 映射
+    key_info: Dict[str, Dict[str, str]] = {}
+    for key in root.findall("g:key", ns):
+        key_id = key.attrib.get("id")
+        attr_name = key.attrib.get("attr.name")
+        key_for = key.attrib.get("for")
+        if key_id and attr_name and key_for:
+            key_info[key_id] = {"for": key_for, "name": attr_name}
+
+    node_key_map = {k: v["name"] for k, v in key_info.items() if v["for"] == "node"}
+    edge_key_map = {k: v["name"] for k, v in key_info.items() if v["for"] == "edge"}
+
+    # 先构建一个 id -> 节点元素 的索引，便于后续查邻居信息
+    node_elems: Dict[str, ET.Element] = {}
+    for node in root.findall(".//g:node", ns):
+        nid = node.attrib.get("id") or ""
+        node_elems[nid] = node
+
+    node_elem = node_elems.get(node_id)
+    if node_elem is None:
+        raise HTTPException(status_code=404, detail="未找到对应节点")
+
+    def _extract_node_attrs(elem: ET.Element) -> Dict[str, Any]:
+        nid = elem.attrib.get("id") or ""
+        attrs: Dict[str, Any] = {"id": nid}
+        for data in elem.findall("g:data", ns):
+            key_id = data.attrib.get("key")
+            attr_name = node_key_map.get(key_id)
+            if not attr_name:
+                continue
+            text = (data.text or "").strip() if data.text is not None else ""
+            attrs[attr_name] = text
+        return attrs
+
+    # 当前节点属性
+    cur_attrs = _extract_node_attrs(node_elem)
+    label = cur_attrs.get("entity_id") or node_id
+    node_type = cur_attrs.get("entity_type") or ""
+    description = cur_attrs.get("description") or ""
+    created_at_raw = cur_attrs.get("created_at")
+    try:
+        created_at = int(created_at_raw) if created_at_raw is not None else None
+    except (TypeError, ValueError):
+        created_at = None
+
+    # 统计邻居：扫描所有边
+    neighbor_ids: set[str] = set()
+    for edge in root.findall(".//g:edge", ns):
+        source = edge.attrib.get("source") or ""
+        target = edge.attrib.get("target") or ""
+        if source == node_id and target:
+            neighbor_ids.add(target)
+        elif target == node_id and source:
+            neighbor_ids.add(source)
+
+    neighbors: List[Dict[str, Any]] = []
+    for nid in neighbor_ids:
+        elem = node_elems.get(nid)
+        if elem is None:
+            continue
+        attrs = _extract_node_attrs(elem)
+        n_label = attrs.get("entity_id") or nid
+        n_type = attrs.get("entity_type") or ""
+        neighbors.append({"id": nid, "label": n_label, "type": n_type})
+
+    return {
+        "id": node_id,
+        "label": label,
+        "type": node_type,
+        "description": description,
+        "created_at": created_at,
+        "neighbors": neighbors,
+    }
 
