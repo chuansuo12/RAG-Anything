@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 """
-读取 parquet 文件并显示前几行数据
+读取 parquet / csv 文件并显示前几行数据
 
 用法示例:
   python eval/read_input.py runtime/eval/train-00000-of-00001.parquet
+  python eval/read_input.py runtime/eval/train-00000-of-00001.csv
   python eval/read_input.py runtime/eval/train-00000-of-00001.parquet --n 10
 """
 
@@ -15,13 +16,13 @@ import pandas as pd
 
 def main():
     parser = argparse.ArgumentParser(
-        description="读取 parquet 文件并显示前几行数据",
+        description="读取 parquet/csv 文件并显示前几行数据",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "input_path",
         type=str,
-        help="输入的 parquet 文件路径",
+        help="输入的 parquet/csv 文件路径",
     )
     parser.add_argument(
         "--n",
@@ -46,7 +47,14 @@ def main():
     print("-" * 80)
 
     try:
-        df = pd.read_parquet(input_path)
+        suffix = input_path.suffix.lower()
+        if suffix in {".parquet", ".pq"}:
+            df = pd.read_parquet(input_path)
+        elif suffix == ".csv":
+            df = pd.read_csv(input_path, dtype=str, na_filter=False)
+        else:
+            print(f"错误: 不支持的文件类型: {input_path}（仅支持 .parquet/.pq/.csv）")
+            return
 
         # 显示基本信息
         if args.show_info:

@@ -4,7 +4,7 @@ RAGAnything Eval Script
 =======================
 
 功能：
-- 从 parquet 文件中读取 eval 数据（包含 docid / query / Answer）
+- 从 parquet / csv 文件中读取 eval 数据（包含 doc_id / query / Answer）
 - 根据 docid 加载对应的 LightRAG workspace：runtime/source/{docid}/rag_storage
 - 使用 RAGAnything 对每条 query 生成回答
 - 使用给定 Prompt 调用同一套 LLM（llm_model_func）做自动打分（accuracy: 0/1）
@@ -150,6 +150,23 @@ def build_eval_prompt(question: str, expected_answer: str, generated_answer: str
         question=question,
         expected_answer=expected_answer,
         generated_answer=generated_answer,
+    )
+
+
+def load_eval_dataset(dataset_path: Path) -> pd.DataFrame:
+    """
+    读取评测数据集，支持：
+    - .parquet（pandas.read_parquet）
+    - .csv（pandas.read_csv）
+    """
+    suffix = dataset_path.suffix.lower()
+    if suffix in {".parquet", ".pq"}:
+        return pd.read_parquet(dataset_path)
+    if suffix == ".csv":
+        # 评测列通常是字符串；禁用 NA 解析以避免空字符串变成 NaN
+        return pd.read_csv(dataset_path, dtype=str, na_filter=False)
+    raise ValueError(
+        f"Unsupported dataset file type: {dataset_path} (supported: .parquet/.pq/.csv)"
     )
 
 
@@ -340,7 +357,7 @@ async def evaluate_single_row(
 async def run_eval(cfg: EvalConfig) -> None:
     """主评估流程。"""
     if not cfg.dataset_path.exists():
-        raise FileNotFoundError(f"Dataset parquet not found: {cfg.dataset_path}")
+        raise FileNotFoundError(f"Dataset not found: {cfg.dataset_path}")
 
     # 为本次评测创建独立的运行目录，并把日志写入其中
     run_root = Path("runtime/eval")
@@ -363,7 +380,15 @@ async def run_eval(cfg: EvalConfig) -> None:
     doc_ragstore = build_doc_ragstore_mapping(cfg.source_root, DOC_RAGSTORE_PATH)
 
     logger.info("Loading dataset from %s", cfg.dataset_path)
-    df = pd.read_parquet(cfg.dataset_path)
+    df = load_eval_dataset(cfg.dataset_path)
+
+    required_cols = [cfg.docid_col, cfg.question_col, cfg.answer_col]
+    missing_cols = [c for c in required_cols if c not in df.columns]
+    if missing_cols:
+        raise KeyError(
+            "Dataset is missing required columns: "
+            f"{missing_cols}. Available columns: {list(df.columns)}"
+        )
 
     # 若指定了 docid_filter，仅保留这些 docid 对应的样本
     if cfg.docid_filter:
@@ -430,7 +455,7 @@ async def run_eval(cfg: EvalConfig) -> None:
 
 def parse_args() -> EvalConfig:
     parser = argparse.ArgumentParser(
-        description="Evaluate RAGAnything on a parquet dataset using accuracy metric.",
+        description="Evaluate RAGAnything on a parquet/csv dataset using accuracy metric.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
@@ -438,7 +463,7 @@ def parse_args() -> EvalConfig:
         "--dataset_path",
         type=str,
         default="runtime/eval/train-00000-of-00001.parquet",
-        help="Path to parquet file containing columns: docid, query, Answer.",
+        help="Path to dataset file (.parquet/.csv) containing columns: doc_id, query, Answer (or specify *_col args).",
     )
     parser.add_argument(
         "--source_root",

@@ -3,6 +3,9 @@ import {
   kbGraphEmptyEl,
   kbGraphNodeDetailEl,
   kbGraphNodeDetailContentEl,
+  kbGraphSearchInputEl,
+  kbGraphSearchClearBtnEl,
+  kbGraphSearchResultEl,
 } from "./dom.js";
 import { appState } from "./state.js";
 import { fetchJSON } from "./api.js";
@@ -26,20 +29,18 @@ export function clearKbGraph() {
     kbGraphNodeDetailContentEl.textContent = "";
     kbGraphNodeDetailEl.classList.add("hidden");
   }
+  appState.kbGraphRawNodes = [];
+  appState.kbGraphRawEdges = [];
 }
 
-export function renderKbGraph(graphData) {
+function createNetwork(nodesData, edgesData) {
   if (!kbGraphEl) return;
-
   // vis 由外部脚本注入为全局变量
   // eslint-disable-next-line no-undef
   if (typeof vis === "undefined" || !vis.Network) {
     console.warn("vis-network 未加载，无法渲染知识图谱。");
     return;
   }
-
-  const nodesData = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
-  const edgesData = Array.isArray(graphData?.edges) ? graphData.edges : [];
 
   if (!nodesData.length) {
     clearKbGraph();
@@ -177,6 +178,105 @@ export function renderKbGraph(graphData) {
       kbGraphNodeDetailEl.classList.add("hidden");
     }
   });
+}
+
+async function applyKbGraphFilter() {
+  if (!kbGraphEl) return;
+  const docId = appState.currentDocId;
+  if (!docId) return;
+
+  const query = (kbGraphSearchInputEl?.value || "").trim();
+
+  // 无查询时，回到默认视图（后端裁剪、返回总数）
+  if (!query) {
+    if (kbGraphSearchResultEl) {
+      kbGraphSearchResultEl.textContent = "";
+    }
+    await loadKbGraph(docId);
+    return;
+  }
+
+  try {
+    const data = await fetchJSON(
+      `/api/docs/${encodeURIComponent(
+        docId,
+      )}/graph?q=${encodeURIComponent(query)}&with_neighbors=1`,
+    );
+
+    renderKbGraph(data);
+
+    const total = typeof data.total_nodes === "number"
+      ? data.total_nodes
+      : (Array.isArray(data.nodes) ? data.nodes.length : 0);
+    const shown = Array.isArray(data.nodes) ? data.nodes.length : 0;
+
+    if (kbGraphSearchResultEl) {
+      if (!shown) {
+        kbGraphSearchResultEl.textContent = "未找到匹配的节点，请尝试其他关键词。";
+      } else if (total > shown) {
+        kbGraphSearchResultEl.textContent = `全图共 ${total} 个节点，本次搜索展示 ${shown} 个（命中节点及其一阶邻居）。`;
+      } else {
+        kbGraphSearchResultEl.textContent = `共 ${shown} 个节点（命中节点及其一阶邻居）。`;
+      }
+    }
+  } catch (e) {
+    console.error(e);
+    if (kbGraphEmptyEl) {
+      kbGraphEmptyEl.textContent = e.message || "搜索知识图谱失败";
+      kbGraphEmptyEl.classList.remove("hidden");
+    }
+  }
+}
+
+let kbGraphSearchDebounceTimer = null;
+
+if (kbGraphSearchInputEl) {
+  kbGraphSearchInputEl.addEventListener("input", () => {
+    if (kbGraphSearchDebounceTimer) {
+      clearTimeout(kbGraphSearchDebounceTimer);
+    }
+    kbGraphSearchDebounceTimer = setTimeout(() => {
+      applyKbGraphFilter();
+    }, 400);
+  });
+}
+
+if (kbGraphSearchClearBtnEl && kbGraphSearchInputEl) {
+  kbGraphSearchClearBtnEl.addEventListener("click", () => {
+    kbGraphSearchInputEl.value = "";
+    if (kbGraphSearchDebounceTimer) {
+      clearTimeout(kbGraphSearchDebounceTimer);
+      kbGraphSearchDebounceTimer = null;
+    }
+    applyKbGraphFilter();
+  });
+}
+
+export function renderKbGraph(graphData) {
+  if (!kbGraphEl) return;
+
+  const nodesData = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+  const edgesData = Array.isArray(graphData?.edges) ? graphData.edges : [];
+
+  appState.kbGraphRawNodes = nodesData;
+  appState.kbGraphRawEdges = edgesData;
+  appState.kbGraphTotalNodes = Number.isFinite(graphData?.total_nodes)
+    ? graphData.total_nodes
+    : nodesData.length;
+
+  if (kbGraphSearchResultEl) {
+    const total = appState.kbGraphTotalNodes;
+    const shown = nodesData.length;
+    if (!shown) {
+      kbGraphSearchResultEl.textContent = "当前没有可展示的节点";
+    } else if (total > shown) {
+      kbGraphSearchResultEl.textContent = `全图共 ${total} 个节点，当前展示最近的 ${shown} 个节点。`;
+    } else {
+      kbGraphSearchResultEl.textContent = `共 ${shown} 个节点。`;
+    }
+  }
+
+  createNetwork(nodesData, edgesData);
 }
 
 export async function loadKbGraph(docId) {

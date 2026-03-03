@@ -4,11 +4,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
+import json
+import os
 
 from web.routes_conversations import router as conversations_router
 from web.routes_docs import router as docs_router
 from web.routes_index import router as index_router
 from web.settings import ensure_runtime_dirs
+from config.graph_conf import ENTITY_TYPES
 
 
 app = FastAPI(title="RAGAnything 知识库问答 Web UI")
@@ -17,6 +20,9 @@ ensure_runtime_dirs()
 
 BASE_DIR = Path(__file__).resolve().parent
 app.mount("/static", StaticFiles(directory=BASE_DIR / "front"), name="static")
+
+# 设置 ENTITY_TYPES 环境变量，供后端逻辑使用（从配置集中读取）
+os.environ["ENTITY_TYPES"] = json.dumps(ENTITY_TYPES, ensure_ascii=False)
 
 app.add_middleware(
     CORSMiddleware,

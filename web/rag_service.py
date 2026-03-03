@@ -192,7 +192,11 @@ def _load_graphml(doc_meta: Dict[str, Any]) -> ET.Element:
     return tree.getroot()
 
 
-def get_doc_graph(doc_meta: Dict[str, Any]) -> Dict[str, Any]:
+def get_doc_graph(
+    doc_meta: Dict[str, Any],
+    query: str | None = None,
+    with_neighbors: bool = True,
+) -> Dict[str, Any]:
     """
     从 LightRAG 的 graphml 文件中解析知识库图，返回给前端使用的 nodes/edges 结构。
 
@@ -248,6 +252,8 @@ def get_doc_graph(doc_meta: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
 
+    total_nodes = len(nodes)
+
     edges: List[Dict[str, Any]] = []
     for idx, edge in enumerate(root.findall(".//g:edge", ns)):
         source = edge.attrib.get("source") or ""
@@ -276,23 +282,52 @@ def get_doc_graph(doc_meta: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
 
-    # 为了避免前端在极大图上卡顿，如节点过多则做一个简单裁剪
-    max_nodes = 300
-    if len(nodes) > max_nodes:
-        nodes_sorted = sorted(
-            nodes,
-            key=lambda n: n.get("created_at") or 0,
-            reverse=True,
-        )
-        nodes = nodes_sorted[:max_nodes]
-        allowed_ids = {n["id"] for n in nodes}
+    # 如果带查询，按名称搜索并可选扩展到一阶邻居
+    q = (query or "").strip().lower()
+    if q:
+        matched_ids = {
+            n["id"]
+            for n in nodes
+            if q in str(n.get("label") or "").lower() or q in str(n["id"]).lower()
+        }
+        if not matched_ids:
+            return {"nodes": [], "edges": [], "total_nodes": total_nodes}
+
+        allowed_ids = set(matched_ids)
+        if with_neighbors:
+            for e in edges:
+                s = e.get("source")
+                t = e.get("target")
+                if s in matched_ids or t in matched_ids:
+                    if s:
+                        allowed_ids.add(s)
+                    if t:
+                        allowed_ids.add(t)
+
+        nodes = [n for n in nodes if n["id"] in allowed_ids]
         edges = [
             e
             for e in edges
             if e.get("source") in allowed_ids and e.get("target") in allowed_ids
         ]
+    else:
+        # 无查询时，为避免前端在极大图上卡顿，仅展示最近的部分节点
+        max_nodes = 300
+        if len(nodes) > max_nodes:
+            nodes_sorted = sorted(
+                nodes,
+                key=lambda n: n.get("created_at") or 0,
+                reverse=True,
+            )
+            nodes = nodes_sorted[:max_nodes]
+            allowed_ids = {n["id"] for n in nodes}
+            edges = [
+                e
+                for e in edges
+                if e.get("source") in allowed_ids and e.get("target") in allowed_ids
+            ]
 
-    return {"nodes": nodes, "edges": edges}
+    return {"nodes": nodes, "edges": edges, "total_nodes": total_nodes}
 
 
 def get_doc_graph_node_detail(doc_meta: Dict[str, Any], node_id: str) -> Dict[str, Any]:

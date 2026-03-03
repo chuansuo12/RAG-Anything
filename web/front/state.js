@@ -3,5 +3,8 @@ export const appState = {
   currentConversationId: "",
   currentView: "qa",
   kbGraphNetwork: null,
+  kbGraphRawNodes: [],
+  kbGraphRawEdges: [],
+  kbGraphTotalNodes: 0,
 };
 

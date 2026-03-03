@@ -7,6 +7,7 @@ import {
   kbDetailEl,
   kbDetailPdfLinkEl,
   kbOverviewSectionEl,
+  kbCurrentNameEl,
   kbUploadSectionEl,
   uploadBtn,
   startConversationBtn,
@@ -129,6 +130,10 @@ export function updateKbDetail(meta) {
     loadKbGraph(docId);
   } else {
     clearKbGraph();
+  }
+
+  if (kbCurrentNameEl) {
+    kbCurrentNameEl.textContent = fileName || "";
   }
 }
 

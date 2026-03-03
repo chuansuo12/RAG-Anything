@@ -4,6 +4,7 @@
 
 用法示例:
   python eval/stats_by_docid.py runtime/eval/train-00000-of-00001.parquet
+  python eval/stats_by_docid.py runtime/eval/train-00000-of-00001.csv
   python eval/stats_by_docid.py runtime/eval/train-00000-of-00001.parquet --top 10 --docid_col docid
 """
 
@@ -21,7 +22,7 @@ def main():
     parser.add_argument(
         "input_path",
         type=str,
-        help="输入的 parquet 文件路径",
+        help="输入的 parquet/csv 文件路径",
     )
     parser.add_argument(
         "--top",
@@ -52,7 +53,14 @@ def main():
     print("-" * 80)
 
     try:
-        df = pd.read_parquet(input_path)
+        suffix = input_path.suffix.lower()
+        if suffix in {".parquet", ".pq"}:
+            df = pd.read_parquet(input_path)
+        elif suffix == ".csv":
+            df = pd.read_csv(input_path, dtype=str, na_filter=False)
+        else:
+            print(f"错误: 不支持的文件类型: {input_path}（仅支持 .parquet/.pq/.csv）")
+            return
 
         # 检查列是否存在
         if args.docid_col not in df.columns:

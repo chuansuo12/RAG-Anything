@@ -53,7 +53,11 @@ async def get_doc(doc_id: str) -> Dict[str, Any]:
 
 
 @router.get("/{doc_id}/graph")
-async def get_doc_graph_endpoint(doc_id: str) -> Dict[str, Any]:
+async def get_doc_graph_endpoint(
+    doc_id: str,
+    q: str | None = None,
+    with_neighbors: bool = True,
+) -> Dict[str, Any]:
     """
     返回指定知识库的图数据（基于 LightRAG 构建的实体关系图）。
     """
@@ -63,7 +67,7 @@ async def get_doc_graph_endpoint(doc_id: str) -> Dict[str, Any]:
     if meta.get("status") != "ready":
         raise HTTPException(status_code=400, detail="知识库尚未就绪，无法加载图数据")
 
-    return get_doc_graph(meta)
+    return get_doc_graph(meta, query=q, with_neighbors=with_neighbors)
 
 
 @router.get("/{doc_id}/graph/node")
