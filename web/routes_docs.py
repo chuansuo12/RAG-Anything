@@ -5,11 +5,12 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from .rag_service import (
     build_rag_index_for_pdf,
+    _resolve_working_dir_for_version,
     get_doc_graph,
     get_doc_graph_node_detail,
 )
@@ -57,6 +58,7 @@ async def get_doc_graph_endpoint(
     doc_id: str,
     q: str | None = None,
     with_neighbors: bool = True,
+    version: str = "v1",
 ) -> Dict[str, Any]:
     """
     返回指定知识库的图数据（基于 LightRAG 构建的实体关系图）。
@@ -67,11 +69,15 @@ async def get_doc_graph_endpoint(
     if meta.get("status") != "ready":
         raise HTTPException(status_code=400, detail="知识库尚未就绪，无法加载图数据")
 
+    if (version or "v1").lower() == "v2":
+        meta = {**meta, "working_dir": _resolve_working_dir_for_version(meta, "v2")}
     return get_doc_graph(meta, query=q, with_neighbors=with_neighbors)
 
 
 @router.get("/{doc_id}/graph/node")
-async def get_doc_graph_node_endpoint(doc_id: str, node_id: str) -> Dict[str, Any]:
+async def get_doc_graph_node_endpoint(
+    doc_id: str, node_id: str, version: str = "v1"
+) -> Dict[str, Any]:
     """
     返回指定知识库中某个节点的详细信息，用于前端点击节点时按需加载。
     """
@@ -81,6 +87,8 @@ async def get_doc_graph_node_endpoint(doc_id: str, node_id: str) -> Dict[str, An
     if meta.get("status") != "ready":
         raise HTTPException(status_code=400, detail="知识库尚未就绪，无法加载图数据")
 
+    if (version or "v1").lower() == "v2":
+        meta = {**meta, "working_dir": _resolve_working_dir_for_version(meta, "v2")}
     return get_doc_graph_node_detail(meta, node_id)
 
 
@@ -105,6 +113,32 @@ async def get_doc_pdf(doc_id: str) -> FileResponse:
         path_obj,
         media_type="application/pdf",
         filename=path_obj.name,
+    )
+
+
+@router.get("/{doc_id}/product-schema")
+async def get_doc_product_schema(doc_id: str) -> FileResponse:
+    """
+    返回该知识库 v2 生成的产品信息（product info.json）。
+    """
+    meta = _read_json(_doc_meta_path(doc_id), default=None)
+    if not isinstance(meta, dict):
+        raise HTTPException(status_code=404, detail="知识库不存在")
+    if meta.get("status") != "ready":
+        raise HTTPException(status_code=400, detail="知识库尚未就绪，无法获取 product schema")
+
+    v2_dir = _resolve_working_dir_for_version(meta, "v2")
+    if not v2_dir:
+        raise HTTPException(status_code=404, detail="未找到 v2 工作目录")
+
+    info_path = Path(v2_dir).resolve() / "product info.json"
+    if not info_path.exists():
+        raise HTTPException(status_code=404, detail="该知识库尚未生成 product info（v2）")
+
+    return FileResponse(
+        info_path,
+        media_type="application/json",
+        filename="product info.json",
     )
 
 
@@ -182,7 +216,11 @@ async def delete_doc(doc_id: str) -> Dict[str, Any]:
 
 
 @router.post("/upload")
-async def upload_doc(file: UploadFile = File(...)) -> Dict[str, Any]:
+async def upload_doc(
+    file: UploadFile = File(...),
+    kb_version: str = Form("v1"),
+    force_v1_then_v2: bool = Form(False),
+) -> Dict[str, Any]:
     filename = file.filename or "knowledge_base.pdf"
     if not filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="仅支持 PDF 文件")
@@ -216,7 +254,18 @@ async def upload_doc(file: UploadFile = File(...)) -> Dict[str, Any]:
     log_lines.append("开始通过 MinerU 云 API 解析知识库 PDF，并构建 RAG 索引...")
 
     try:
-        await build_rag_index_for_pdf(pdf_path, parsed_dir, working_dir, log_lines)
+        result = await build_rag_index_for_pdf(
+            pdf_path,
+            parsed_dir,
+            working_dir,
+            log_lines,
+            kb_version=kb_version,
+            force_v1_then_v2=force_v1_then_v2,
+        )
+        if isinstance(result, dict):
+            meta["content_doc_id"] = result.get("content_doc_id")
+            if result.get("working_dir_v2"):
+                meta["working_dir_v2"] = result.get("working_dir_v2")
         meta["status"] = "ready"
         meta["log"] = log_lines
         _write_json(_doc_meta_path(doc_id), meta)
@@ -231,4 +280,203 @@ async def upload_doc(file: UploadFile = File(...)) -> Dict[str, Any]:
         meta["log"] = log_lines
         _write_json(_doc_meta_path(doc_id), meta)
         raise HTTPException(status_code=500, detail=f"解析失败: {e}")
+
+
+@router.post("/{doc_id}/generate-v2")
+async def generate_v2_index(
+    doc_id: str,
+    force_v1_then_v2: bool = Form(False),
+) -> Dict[str, Any]:
+    """
+    为已有知识库生成 v2 索引（产品 schema + rag_storage_v2）。
+
+    - 默认：基于现有 v1 索引直接生成/更新 v2
+    - force_v1_then_v2=True：先清理并重建 v1，再生成 v2（更耗时）
+    """
+    meta = _read_json(_doc_meta_path(doc_id), default=None)
+    if not isinstance(meta, dict):
+        raise HTTPException(status_code=404, detail="知识库不存在")
+    if meta.get("status") != "ready":
+        raise HTTPException(status_code=400, detail="知识库尚未就绪，无法生成 v2")
+
+    parsed_dir = Path(str(meta.get("parsed_dir") or "")).resolve()
+    working_dir = Path(str(meta.get("working_dir") or "")).resolve()
+    if not parsed_dir.exists() or not working_dir.exists():
+        raise HTTPException(status_code=400, detail="缺少解析目录或 v1 工作目录，无法生成 v2")
+
+    from .rag_service import _load_content_list_from_parsed_dir
+    from raganything import RAGAnything, RAGAnythingConfig
+    from llm import embedding_func, llm_model_func, vision_model_func
+    from llm.qwen_llm import qwen_rerank_model_func
+    import shutil
+
+    log_lines: List[str] = list(meta.get("log") or [])
+    log_lines.append("开始生成 v2 索引...")
+
+    # Optional rebuild v1 from parsed outputs
+    if force_v1_then_v2:
+        try:
+            if working_dir.exists():
+                shutil.rmtree(working_dir)
+            v2_dir = working_dir.with_name("rag_storage_v2")
+            if v2_dir.exists():
+                shutil.rmtree(v2_dir)
+            working_dir.mkdir(parents=True, exist_ok=True)
+            log_lines.append("已清理旧 v1/v2 索引目录，将重建 v1 再生成 v2。")
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"清理旧索引目录失败: {e}")
+
+        content_list, file_path_ref = _load_content_list_from_parsed_dir(parsed_dir)
+        config = RAGAnythingConfig(
+            working_dir=str(working_dir),
+            parser="mineru",
+            parse_method="auto",
+            parser_output_dir=str(parsed_dir),
+        )
+        rag = RAGAnything(
+            config=config,
+            llm_model_func=llm_model_func,
+            vision_model_func=vision_model_func,
+            embedding_func=embedding_func,
+            lightrag_kwargs={"rerank_model_func": qwen_rerank_model_func},
+        )
+        meta["content_doc_id"] = rag._generate_content_based_doc_id(content_list)
+        await rag.insert_content_list(
+            content_list=content_list,
+            file_path=file_path_ref,
+            display_stats=False,
+        )
+        log_lines.append("v1 重建完成。")
+
+    content_doc_id = (meta.get("content_doc_id") or "").strip()
+    if not content_doc_id:
+        # Fallback: derive from parsed outputs
+        content_list, _ = _load_content_list_from_parsed_dir(parsed_dir)
+        config = RAGAnythingConfig(
+            working_dir=str(working_dir),
+            parser="mineru",
+            parse_method="auto",
+            parser_output_dir=str(parsed_dir),
+        )
+        rag_tmp = RAGAnything(
+            config=config,
+            llm_model_func=llm_model_func,
+            vision_model_func=vision_model_func,
+            embedding_func=embedding_func,
+            lightrag_kwargs={"rerank_model_func": qwen_rerank_model_func},
+        )
+        content_doc_id = rag_tmp._generate_content_based_doc_id(content_list)
+        meta["content_doc_id"] = content_doc_id
+
+    config = RAGAnythingConfig(
+        working_dir=str(working_dir),
+        parser="mineru",
+        parse_method="auto",
+        parser_output_dir=str(parsed_dir),
+    )
+    rag = RAGAnything(
+        config=config,
+        llm_model_func=llm_model_func,
+        vision_model_func=vision_model_func,
+        embedding_func=embedding_func,
+        lightrag_kwargs={"rerank_model_func": qwen_rerank_model_func},
+    )
+    await rag._ensure_lightrag_initialized()
+
+    v2_dir = await rag.generate_product_schema_v2(
+        doc_id=content_doc_id,
+        file_path_ref=parsed_dir.name,
+        force_rebuild_v2=True,
+    )
+    if not v2_dir:
+        raise HTTPException(status_code=500, detail="生成 v2 失败：未得到有效输出")
+
+    meta["working_dir_v2"] = str(v2_dir)
+    meta["log"] = log_lines + [f"v2 生成完成：{v2_dir}"]
+    _write_json(_doc_meta_path(doc_id), meta)
+    return {"doc_id": doc_id, "meta": meta, "working_dir_v2": v2_dir}
+
+
+@router.post("/{doc_id}/regenerate")
+async def regenerate_index(
+    doc_id: str,
+    include_v2: bool = Form(False),
+) -> Dict[str, Any]:
+    """
+    重新生成索引（不重新解析 PDF）：
+
+    - 重建 v1：清理 working_dir 后，基于 parsed_dir 重建索引
+    - 可选 include_v2：在 v1 重建后生成 v2（rag_storage_v2）
+    """
+    meta = _read_json(_doc_meta_path(doc_id), default=None)
+    if not isinstance(meta, dict):
+        raise HTTPException(status_code=404, detail="知识库不存在")
+    if meta.get("status") != "ready":
+        raise HTTPException(status_code=400, detail="知识库尚未就绪，无法重新生成")
+
+    parsed_dir = Path(str(meta.get("parsed_dir") or "")).resolve()
+    working_dir = Path(str(meta.get("working_dir") or "")).resolve()
+    if not parsed_dir.exists():
+        raise HTTPException(status_code=400, detail="缺少解析目录 parsed_dir，无法重新生成")
+    if not working_dir.parent.exists():
+        raise HTTPException(status_code=400, detail="知识库目录不存在，无法重新生成")
+
+    from .rag_service import _load_content_list_from_parsed_dir
+    from raganything import RAGAnything, RAGAnythingConfig
+    from llm import embedding_func, llm_model_func, vision_model_func
+    from llm.qwen_llm import qwen_rerank_model_func
+
+    log_lines: List[str] = list(meta.get("log") or [])
+    log_lines.append("开始重新生成索引...")
+
+    # Clear v1/v2 dirs
+    try:
+        if working_dir.exists():
+            shutil.rmtree(working_dir)
+        working_dir.mkdir(parents=True, exist_ok=True)
+        v2_dir_path = working_dir.with_name("rag_storage_v2")
+        if v2_dir_path.exists():
+            shutil.rmtree(v2_dir_path)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"清理旧索引目录失败: {e}")
+
+    content_list, file_path_ref = _load_content_list_from_parsed_dir(parsed_dir)
+    config = RAGAnythingConfig(
+        working_dir=str(working_dir),
+        parser="mineru",
+        parse_method="auto",
+        parser_output_dir=str(parsed_dir),
+    )
+    rag = RAGAnything(
+        config=config,
+        llm_model_func=llm_model_func,
+        vision_model_func=vision_model_func,
+        embedding_func=embedding_func,
+        lightrag_kwargs={"rerank_model_func": qwen_rerank_model_func},
+    )
+
+    content_doc_id = rag._generate_content_based_doc_id(content_list)
+    meta["content_doc_id"] = content_doc_id
+    await rag.insert_content_list(
+        content_list=content_list,
+        file_path=file_path_ref,
+        display_stats=False,
+    )
+    log_lines.append("v1 重建完成。")
+
+    if include_v2:
+        await rag._ensure_lightrag_initialized()
+        v2_dir = await rag.generate_product_schema_v2(
+            doc_id=content_doc_id,
+            file_path_ref=parsed_dir.name,
+            force_rebuild_v2=True,
+        )
+        if not v2_dir:
+            raise HTTPException(status_code=500, detail="生成 v2 失败：未得到有效输出")
+        meta["working_dir_v2"] = str(v2_dir)
+        log_lines.append(f"v2 生成完成：{v2_dir}")
+
+    meta["log"] = log_lines
+    _write_json(_doc_meta_path(doc_id), meta)
+    return {"doc_id": doc_id, "meta": meta}
 

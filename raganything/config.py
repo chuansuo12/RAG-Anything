@@ -108,6 +108,33 @@ class RAGAnythingConfig:
     use_full_path: bool = field(default=get_env_value("USE_FULL_PATH", False, bool))
     """Whether to use full file path (True) or just basename (False) for file references in LightRAG."""
 
+    # Product information extraction (after text + multimodal graphs)
+    # ---
+    enable_product_info_extraction: bool = field(
+        default=get_env_value("ENABLE_PRODUCT_INFO_EXTRACTION", False, bool)
+    )
+    """Whether to extract structured product information (using a schema) after building text & multimodal graphs."""
+
+    product_schema_working_dir: str = field(
+        default=get_env_value("PRODUCT_SCHEMA_WORKING_DIR", "", str)
+    )
+    """Optional output working directory for v2 storages (defaults to sibling rag_storage_v2)."""
+
+    product_schema_max_chunks: int = field(
+        default=get_env_value("PRODUCT_SCHEMA_MAX_CHUNKS", 40, int)
+    )
+    """Max number of document chunks to feed into schema extraction."""
+
+    product_schema_max_chars: int = field(
+        default=get_env_value("PRODUCT_SCHEMA_MAX_CHARS", 60000, int)
+    )
+    """Max characters of chunk text to feed into schema extraction."""
+
+    product_schema_merge_threshold: float = field(
+        default=get_env_value("PRODUCT_SCHEMA_MERGE_THRESHOLD", 0.85, float)
+    )
+    """Cosine similarity threshold for semantic merging schema nodes into graph."""
+
     def __post_init__(self):
         """Post-initialization setup for backward compatibility"""
         # Support legacy environment variable names for backward compatibility

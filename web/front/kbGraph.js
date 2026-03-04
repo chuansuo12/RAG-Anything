@@ -33,6 +33,13 @@ export function clearKbGraph() {
   appState.kbGraphRawEdges = [];
 }
 
+function showKbGraphMessage(msg) {
+  if (kbGraphEmptyEl) {
+    kbGraphEmptyEl.textContent = msg;
+    kbGraphEmptyEl.classList.remove("hidden");
+  }
+}
+
 function createNetwork(nodesData, edgesData) {
   if (!kbGraphEl) return;
   // vis 由外部脚本注入为全局变量
@@ -132,10 +139,11 @@ function createNetwork(nodesData, edgesData) {
     try {
       const docId = appState.currentDocId;
       if (!docId) return;
+      const version = appState.kbVersion || "v1";
       const detail = await fetchJSON(
         `/api/docs/${encodeURIComponent(
           docId,
-        )}/graph/node?node_id=${encodeURIComponent(nodeId)}`,
+        )}/graph/node?node_id=${encodeURIComponent(nodeId)}&version=${encodeURIComponent(version)}`,
       );
 
       const lines = [];
@@ -197,10 +205,14 @@ async function applyKbGraphFilter() {
   }
 
   try {
+    const version = appState.kbVersion || "v1";
+    // Clear old graph so user sees refresh in effect
+    clearKbGraph();
+    showKbGraphMessage("加载中...");
     const data = await fetchJSON(
       `/api/docs/${encodeURIComponent(
         docId,
-      )}/graph?q=${encodeURIComponent(query)}&with_neighbors=1`,
+      )}/graph?q=${encodeURIComponent(query)}&with_neighbors=1&version=${encodeURIComponent(version)}`,
     );
 
     renderKbGraph(data);
@@ -221,6 +233,7 @@ async function applyKbGraphFilter() {
     }
   } catch (e) {
     console.error(e);
+    clearKbGraph();
     if (kbGraphEmptyEl) {
       kbGraphEmptyEl.textContent = e.message || "搜索知识图谱失败";
       kbGraphEmptyEl.classList.remove("hidden");
@@ -282,16 +295,19 @@ export function renderKbGraph(graphData) {
 export async function loadKbGraph(docId) {
   if (!docId || !kbGraphEl) return;
   try {
+    const version = appState.kbVersion || "v1";
+    clearKbGraph();
+    showKbGraphMessage("加载中...");
     const data = await fetchJSON(
-      `/api/docs/${encodeURIComponent(docId)}/graph`,
+      `/api/docs/${encodeURIComponent(docId)}/graph?version=${encodeURIComponent(version)}`,
     );
     renderKbGraph(data);
   } catch (e) {
     console.error(e);
+    clearKbGraph();
     if (kbGraphEmptyEl) {
       kbGraphEmptyEl.textContent = e.message || "加载知识图谱失败";
       kbGraphEmptyEl.classList.remove("hidden");
     }
   }
 }
-

@@ -6,6 +6,7 @@ import {
   chatInput,
   sendBtn,
   docSelectEl,
+  kbVersionSelectEl,
 } from "./dom.js";
 import { appState } from "./state.js";
 import { fetchJSON } from "./api.js";
@@ -246,6 +247,9 @@ export async function sendMessage() {
   const text = chatInput?.value.trim();
   if (!text) return;
   try {
+    if (kbVersionSelectEl) {
+      appState.kbVersion = kbVersionSelectEl.value || "v1";
+    }
     // 如果当前还没有会话，则基于当前选择的知识库自动创建一个新会话
     if (!appState.currentConversationId) {
       const docId = appState.currentDocId || docSelectEl?.value;
@@ -303,7 +307,10 @@ export async function sendMessage() {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: text }),
+        body: JSON.stringify({
+          question: text,
+          kb_version: appState.kbVersion || "v1",
+        }),
       },
     );
 

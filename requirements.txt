@@ -7,16 +7,15 @@ mineru[core]
 tqdm
 # HTTP client for Qwen qwen3-rerank 调用
 requests
-# Note: Optional dependencies are now defined in setup.py extras_require:
-# - [image]: Pillow>=10.0.0 (for BMP, TIFF, GIF, WebP format conversion)
-# - [text]: reportlab>=4.0.0 (for TXT, MD to PDF conversion)
-# - [paddleocr]: paddleocr + pypdfium2 (for parser='paddleocr')
-# - [office]: requires LibreOffice (external program, not Python package)
-# - [all]: includes all optional dependencies
-#
-# Install with: pip install raganything[image,text] or pip install raganything[all]
+# Web API & service
 fastapi[standard]
-uvicorn 
+uvicorn
 python-multipart
-pandas 
+pandas
 pyarrow
+
+# Agent & tools (LangChain-based)
+langchain
+langchain-core
+langchain-community
+langchain-openai

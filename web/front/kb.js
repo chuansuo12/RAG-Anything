@@ -6,6 +6,8 @@ import {
   kbDetailEmptyEl,
   kbDetailEl,
   kbDetailPdfLinkEl,
+  kbProductSchemaSectionEl,
+  kbProductSchemaContentEl,
   kbOverviewSectionEl,
   kbCurrentNameEl,
   kbUploadSectionEl,
@@ -13,11 +15,68 @@ import {
   startConversationBtn,
   sendBtn,
   pdfInput,
+  uploadGenerateV2El,
+  uploadForceV1ThenV2El,
+  kbRegenerateBtn,
+  kbVersionSelectEl,
 } from "./dom.js";
 import { appState } from "./state.js";
 import { fetchJSON } from "./api.js";
 import { setStatus } from "./status.js";
 import { clearKbGraph, loadKbGraph } from "./kbGraph.js";
+
+let productSchemaFetchToken = 0;
+
+async function loadProductSchemaForDoc(docId) {
+  const token = ++productSchemaFetchToken;
+
+  if (!kbProductSchemaSectionEl || !kbProductSchemaContentEl) return;
+
+  const hide = () => {
+    kbProductSchemaSectionEl.classList.add("hidden");
+    kbProductSchemaContentEl.textContent = "";
+    kbProductSchemaContentEl.classList.add("hidden");
+    const toggleIcon = document.getElementById("kb-product-schema-toggle-icon");
+    if (toggleIcon) {
+      toggleIcon.textContent = "▶";
+    }
+  };
+
+  if (!docId) {
+    hide();
+    return;
+  }
+
+  try {
+    const url = `/api/docs/${encodeURIComponent(
+      docId,
+    )}/product-schema?t=${Date.now()}`;
+    const data = await fetchJSON(url, { cache: "no-store" });
+    if (token !== productSchemaFetchToken) return;
+
+    const text =
+      typeof data === "string" ? data : JSON.stringify(data, null, 2);
+    kbProductSchemaContentEl.textContent = text;
+    kbProductSchemaContentEl.classList.add("hidden");
+    kbProductSchemaSectionEl.classList.remove("hidden");
+  } catch (e) {
+    if (token !== productSchemaFetchToken) return;
+    const msg = String(e?.message || e || "");
+    const isNotFound =
+      msg.includes("404") ||
+      msg.includes("尚未生成 product info") ||
+      msg.includes("未找到 v2 工作目录") ||
+      msg.includes("product info（v2）");
+    if (isNotFound) {
+      hide();
+      return;
+    }
+
+    // Unexpected error: show panel with error text for visibility
+    kbProductSchemaContentEl.textContent = `加载 product info 失败：${msg}`;
+    kbProductSchemaSectionEl.classList.remove("hidden");
+  }
+}
 
 export function renderDocsSelect(docs) {
   if (!docSelectEl) return;
@@ -115,6 +174,8 @@ export function updateKbDetail(meta) {
     }
   }
 
+  loadProductSchemaForDoc(docId);
+
   if (parseLogEl) {
     parseLogEl.textContent = log.join("\n");
   }
@@ -187,6 +248,10 @@ export async function uploadAndParse() {
   }
   const formData = new FormData();
   formData.append("file", file);
+  const includeV2 = Boolean(uploadGenerateV2El?.checked);
+  formData.append("kb_version", includeV2 ? "v2" : "v1");
+  const forceFlag = includeV2 ? Boolean(uploadForceV1ThenV2El?.checked) : false;
+  formData.append("force_v1_then_v2", forceFlag ? "true" : "false");
 
   try {
     setStatus(
@@ -279,5 +344,58 @@ export async function deleteCurrentKnowledgeBase() {
       "错误",
       "bg-red-500/10 text-red-300 border-red-400/30 px-2 py-1 rounded-full border text-xs",
     );
+  }
+}
+
+export async function regenerateCurrentKnowledgeBase() {
+  const docId = appState.currentDocId || docSelectEl?.value;
+  if (!docId) {
+    alert("请先选择一个知识库");
+    return;
+  }
+  const includeV2 = (appState.kbVersion || kbVersionSelectEl?.value || "v1") === "v2";
+  if (!includeV2) {
+    const ok = confirm("确定要重新生成索引吗？\n\n该操作会重建 v1 索引。");
+    if (!ok) return;
+  }
+  try {
+    setStatus(
+      includeV2 ? "生成 v2 中..." : "重新生成中...",
+      "bg-amber-500/10 text-amber-300 border-amber-400/30 px-2 py-1 rounded-full border text-xs",
+    );
+    if (kbRegenerateBtn) kbRegenerateBtn.disabled = true;
+
+    let res;
+    if (includeV2) {
+      // v2 模式：只生成/更新 v2（不重建 v1）
+      const fd = new FormData();
+      fd.append("force_v1_then_v2", "false");
+      res = await fetchJSON(`/api/docs/${encodeURIComponent(docId)}/generate-v2`, {
+        method: "POST",
+        body: fd,
+      });
+    } else {
+      // v1 模式：重建 v1
+      const fd = new FormData();
+      fd.append("include_v2", "false");
+      res = await fetchJSON(`/api/docs/${encodeURIComponent(docId)}/regenerate`, {
+        method: "POST",
+        body: fd,
+      });
+    }
+
+    const meta = res.meta || {};
+    updateKbDetail(meta);
+    await loadDocs();
+    setStatus(includeV2 ? "v2 生成完成" : "重新生成完成");
+  } catch (e) {
+    console.error(e);
+    alert(e.message || (includeV2 ? "生成 v2 失败" : "重新生成失败"));
+    setStatus(
+      "错误",
+      "bg-red-500/10 text-red-300 border-red-400/30 px-2 py-1 rounded-full border text-xs",
+    );
+  } finally {
+    if (kbRegenerateBtn) kbRegenerateBtn.disabled = false;
   }
 }

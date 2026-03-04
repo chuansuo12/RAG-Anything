@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 from raganything import RAGAnything, RAGAnythingConfig
 from raganything.parser import MineruParser
+from raganything.cache import default_rag_cache
 
 from llm import embedding_func, llm_model_func, vision_model_func
 from llm.qwen_llm import qwen_rerank_model_func
@@ -20,10 +21,15 @@ from .utils import (
 )
 
 
-def _load_content_list_from_parsed_dir(parsed_dir: Path) -> Tuple[List[Dict[str, Any]], str]:
+def _load_content_list_from_parsed_dir(
+    parsed_dir: Path,
+    *,
+    fix_image_paths: bool = True,
+) -> Tuple[List[Dict[str, Any]], str]:
     """
     从 MinerU 解析目录加载 content_list（参考 examples/run_qa_from_parsed_dir.py）。
-    目录内需包含 *_{content_list}.json，图片路径会被转为基于该目录的绝对路径。
+    目录内需包含 *_{content_list}.json。
+    fix_image_paths=True 时会把图片路径转为绝对路径；False 时仅读 JSON 不做路径处理（简版/只读，如 agent 按页取上下文）。
     """
     parsed_dir = parsed_dir.resolve()
     if not parsed_dir.is_dir():
@@ -38,10 +44,20 @@ def _load_content_list_from_parsed_dir(parsed_dir: Path) -> Tuple[List[Dict[str,
     json_path = candidates[0]
     file_stem = json_path.stem.replace("_content_list", "")
 
-    content_list, _ = MineruParser._read_output_files(parsed_dir, file_stem, method="auto")
+    content_list, _ = MineruParser._read_output_files(
+        parsed_dir, file_stem, method="auto", fix_image_paths=fix_image_paths
+    )
     if not content_list:
         raise ValueError(f"content_list 为空: {json_path}")
     return content_list, str(parsed_dir)
+
+
+def load_content_list_read_only(parsed_dir: Path) -> Tuple[List[Dict[str, Any]], str]:
+    """
+    简版加载：仅读取 content_list JSON，不重写图片路径。
+    适用于只需按页取文本上下文的场景（如 agent kb_page_context），避免重复 fix image paths。
+    """
+    return _load_content_list_from_parsed_dir(parsed_dir, fix_image_paths=False)
 
 
 async def build_rag_index_for_pdf(
@@ -49,7 +65,9 @@ async def build_rag_index_for_pdf(
     parsed_dir: Path,
     working_dir: Path,
     log_lines: List[str],
-) -> None:
+    kb_version: str = "v1",
+    force_v1_then_v2: bool = False,
+) -> Dict[str, Any]:
     """
     通过 MinerU 解析 PDF，并将结果插入 RAGAnything 索引。
     """
@@ -69,6 +87,8 @@ async def build_rag_index_for_pdf(
         parse_method="auto",
         parser_output_dir=str(parsed_dir),
     )
+    if (kb_version or "v1").lower() == "v2":
+        config.enable_product_schema_extraction = True
 
     rag = RAGAnything(
         config=config,
@@ -80,7 +100,21 @@ async def build_rag_index_for_pdf(
         },
     )
 
+    if force_v1_then_v2 and (kb_version or "v1").lower() == "v2":
+        import shutil
+
+        try:
+            if working_dir.exists():
+                shutil.rmtree(working_dir)
+            v2_dir = working_dir.with_name("rag_storage_v2")
+            if v2_dir.exists():
+                shutil.rmtree(v2_dir)
+            working_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:  # noqa: BLE001
+            log_lines.append(f"清理旧索引目录失败（将继续尝试构建）：{e}")
+
     log_lines.append("正在将解析结果插入 RAG 索引...")
+    content_doc_id = rag._generate_content_based_doc_id(content_list)
     await rag.insert_content_list(
         content_list=content_list,
         file_path=file_path_ref,
@@ -88,10 +122,40 @@ async def build_rag_index_for_pdf(
     )
 
     log_lines.append("解析与索引构建完成。")
+    if (kb_version or "v1").lower() == "v2":
+        v2_dir = working_dir.with_name("rag_storage_v2")
+        if v2_dir.exists():
+            log_lines.append(f"已生成 v2 索引：{v2_dir}")
+
+    result: Dict[str, Any] = {"content_doc_id": content_doc_id}
+    if (kb_version or "v1").lower() == "v2":
+        v2_dir = working_dir.with_name("rag_storage_v2")
+        result["working_dir_v2"] = str(v2_dir)
+    return result
+
+
+def _resolve_working_dir_for_version(doc_meta: Dict[str, Any], kb_version: str) -> str:
+    version = (kb_version or "v1").lower()
+    base = str(doc_meta.get("working_dir") or "").strip()
+    if not base:
+        return base
+
+    if version == "v2":
+        v2 = str(doc_meta.get("working_dir_v2") or "").strip()
+        if v2:
+            return v2
+        p = Path(base).resolve()
+        if p.name == "rag_storage":
+            return str(p.with_name("rag_storage_v2"))
+        if p.name.endswith("_v2"):
+            return str(p)
+        return str(p.parent / f"{p.name}_v2")
+
+    return base
 
 
 async def answer_question(
-    doc_meta: Dict[str, Any], question: str
+    doc_meta: Dict[str, Any], question: str, kb_version: str = "v1"
 ) -> Tuple[str, List[Dict[str, Any]]]:
     """
     基于已构建的知识库进行问答，并返回引用内容块。
@@ -100,34 +164,23 @@ async def answer_question(
         tuple: (answer_text, references)
             references: 检索到的内容块列表，每项含 content, file_path, chunk_id, reference_id
     """
-    working_dir = doc_meta.get("working_dir")
+    working_dir = _resolve_working_dir_for_version(doc_meta, kb_version)
     if not working_dir:
         raise RuntimeError("知识库工作目录缺失")
+    if (kb_version or "v1").lower() == "v2":
+        if not Path(working_dir).exists():
+            raise RuntimeError("请求使用 v2 知识库，但 v2 索引尚未生成")
 
-    # 使用与构建索引时一致的配置来重新加载 LightRAG 索引
-    parsed_dir = doc_meta.get("parsed_dir")
-    config = RAGAnythingConfig(
-        working_dir=str(working_dir),
-        parser="mineru",
-        parse_method="auto",
-        parser_output_dir=str(parsed_dir) if parsed_dir else None,
+    # 使用与构建索引时一致的配置来（懒加载并）复用 LightRAG 索引
+    parsed_dir_raw = doc_meta.get("parsed_dir")
+    rag = await default_rag_cache.get_rag(
+        working_dir=working_dir,
+        parsed_dir=parsed_dir_raw,
+        kb_version=kb_version,
     )
-
-    rag = RAGAnything(
-        config=config,
-        llm_model_func=llm_model_func,
-        vision_model_func=vision_model_func,
-        embedding_func=embedding_func,
-        lightrag_kwargs={
-            "rerank_model_func": qwen_rerank_model_func,
-        },
-    )
-
-    # 确保基于已有 working_dir 初始化 / 加载 LightRAG 实例
-    await rag._ensure_lightrag_initialized()
 
     try:
-        answer, references = await rag.aquery_with_references(question, mode="hybrid")
+        answer, references = await rag.aquery_with_references(question, mode="hybrid", vlm_enhanced=True)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"生成回答失败: {e}")
 
@@ -156,22 +209,135 @@ async def answer_question(
     # 解析模型回答中的 "### References" 区块，提取被引用的 id，
     # 只保留这些 id 对应的引用，并按出现顺序排序。
     selected_ids = _extract_reference_ids_from_answer(answer)
+
+    # 为了兼容 LightRAG 返回的 reference_id 形如 "[0]"、"[1]" 等情况，
+    # 这里对 reference_id 做一次规范化，仅保留数字部分再参与匹配。
+    def _normalize_ref_id(raw: Any) -> str:
+        s = str(raw or "").strip()
+        if s.startswith("[") and s.endswith("]"):
+            inner = s[1:-1].strip()
+            return inner if inner.isdigit() else s
+        return s
+
     if selected_ids:
         order = {ref_id: idx for idx, ref_id in enumerate(selected_ids)}
 
         def _key(ref: Dict[str, Any]) -> int:
-            rid = str(ref.get("reference_id") or "")
-            return order.get(rid, len(order) + 1)
+            rid_norm = _normalize_ref_id(ref.get("reference_id"))
+            return order.get(rid_norm, len(order) + 1)
 
         # 先过滤掉未在 References 中出现的引用
         enriched = [
-            ref for ref in enriched if str(ref.get("reference_id") or "") in order
+            ref for ref in enriched if _normalize_ref_id(ref.get("reference_id")) in order
         ]
         # 再按 References 中的顺序排序
         enriched.sort(key=_key)
 
     # 不改写 LLM 原始回答内容，保留其自身生成的 "### References" 区块。
     return answer, enriched
+
+
+async def query_data_only(
+    doc_meta: Dict[str, Any],
+    hl_keywords: List[str] | None = None,
+    ll_keywords: List[str] | None = None,
+    top_k: int = 10,
+    kb_version: str = "v1",
+) -> Dict[str, Any]:
+    """
+    仅基于知识库执行检索，返回 LightRAG 定义的 data 字段，
+    不在本函数内调用 LLM 生成答案。
+
+    参数设计：
+        - hl_keywords: high-level keywords，高层语义关键词列表；
+        - ll_keywords: low-level keywords，细粒度关键词列表；
+        - top_k: 检索返回的最大条目数，将传递给底层 QueryParam。
+
+    用于 Agent 工具等场景：由外层大模型负责阅读和推理，这里只做检索。
+    返回的数据结构与 answer_question 中的 enriched 引用基本一致，
+    data 字段的结构参考 LightRAG 文档中的说明，通常包含：
+        - entities
+        - relationships
+        - chunks
+        - references
+
+    若调用失败或返回格式异常，则打印错误信息并返回空 dict。
+    """
+    working_dir = _resolve_working_dir_for_version(doc_meta, kb_version)
+    if not working_dir:
+        raise RuntimeError("知识库工作目录缺失")
+    if (kb_version or "v1").lower() == "v2":
+        if not Path(working_dir).exists():
+            raise RuntimeError("请求使用 v2 知识库，但 v2 索引尚未生成")
+
+    parsed_dir_raw = doc_meta.get("parsed_dir")
+    rag = await default_rag_cache.get_rag(
+        working_dir=working_dir,
+        parsed_dir=parsed_dir_raw,
+        kb_version=kb_version,
+    )
+
+    # 直接调用 LightRAG 的数据检索接口，避免内部再做一次 LLM 生成。
+    if not hasattr(rag, "lightrag") or rag.lightrag is None:
+        raise HTTPException(status_code=500, detail="LightRAG 实例尚未初始化")
+
+    from lightrag import QueryParam  # 局部导入以避免循环依赖
+
+    # 构造 QueryParam，将关键词与 top_k 一并传入底层检索
+    extra_kwargs: Dict[str, Any] = {"top_k": top_k}
+    if hl_keywords:
+        extra_kwargs["hl_keywords"] = hl_keywords
+    if ll_keywords:
+        extra_kwargs["ll_keywords"] = ll_keywords
+
+    query_param = QueryParam(mode="hybrid", **extra_kwargs)
+    lightrag = rag.lightrag
+
+    # 注意：在异步环境下不要直接调用 sync 的 query_data，
+    # 其内部会使用 loop.run_until_complete，导致
+    # "This event loop is already running" 错误。
+    aquery_data = getattr(lightrag, "aquery_data", None)
+    if aquery_data is None:
+        raise HTTPException(
+            status_code=500,
+            detail="当前 LightRAG 版本不支持 aquery_data 接口，请升级 LightRAG。",
+        )
+
+    # 基于关键字构造用于 aquery_data 的查询串（主要用于日志与回溯）
+    query_parts: List[str] = []
+    if hl_keywords:
+        query_parts.append("HL: " + ", ".join(hl_keywords))
+    if ll_keywords:
+        query_parts.append("LL: " + ", ".join(ll_keywords))
+    query_str = " | ".join(query_parts)
+
+    try:
+        raw = await lightrag.aquery_data(query_str, param=query_param)
+    except Exception as e:  # noqa: BLE001
+        # 按约定：失败时打印 message，返回空 data
+        print(f"LightRAG aquery_data 调用异常: {e}")
+        return {}
+
+    if not isinstance(raw, dict):
+        print(f"LightRAG aquery_data 返回格式异常: {raw!r}")
+        return {}
+
+    status = raw.get("status")
+    if status != "success":
+        message = raw.get("message") or "LightRAG aquery_data 调用失败（无详细错误信息）"
+        print(f"LightRAG aquery_data 调用失败: {message}")
+        return {}
+
+    data = raw.get("data")
+    if data is None:
+        print("LightRAG aquery_data 返回中缺少 data 字段。")
+        return {}
+
+    if not isinstance(data, dict):
+        print(f"LightRAG aquery_data 返回的 data 字段格式异常: {data!r}")
+        return {}
+
+    return data
 
 
 def _load_graphml(doc_meta: Dict[str, Any]) -> ET.Element:

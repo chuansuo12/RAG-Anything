@@ -262,7 +262,8 @@ class QueryMixin:
             query, param=query_param, system_prompt=system_prompt
         )
 
-        raw_prompt = raw_result.get("llm_response", {}).get("content", "")
+        # llm_response.content 有时可能为 None，这里统一转成字符串，避免后续正则处理报错
+        raw_prompt = raw_result.get("llm_response", {}).get("content") or ""
         data = raw_result.get("data", {})
         chunks = data.get("chunks", [])
         references = [
@@ -285,7 +286,8 @@ class QueryMixin:
             raw_result = await self.lightrag.aquery_llm(
                 query, param=query_param, system_prompt=system_prompt
             )
-            answer = raw_result.get("llm_response", {}).get("content", "")
+            # llm_response.content 可能为 None，这里统一转成字符串，避免后续处理出错
+            answer = raw_result.get("llm_response", {}).get("content") or ""
             if raw_result.get("status") == "success":
                 data = raw_result.get("data", {})
                 references = [
@@ -698,6 +700,10 @@ class QueryMixin:
         Returns:
             tuple: (processed prompt, image count)
         """
+        # 防御性处理：上游可能传入 None 或非字符串类型
+        if not isinstance(prompt, str):
+            prompt = "" if prompt is None else str(prompt)
+
         enhanced_prompt = prompt
         images_processed = 0
 

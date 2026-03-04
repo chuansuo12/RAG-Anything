@@ -108,7 +108,9 @@ async def send_message(
     if not isinstance(doc_meta, dict) or doc_meta.get("status") != "ready":
         raise HTTPException(status_code=400, detail="关联的知识库不存在或尚未解析完成")
 
-    answer, references = await answer_question(doc_meta, question)
+    answer, references = await answer_question(
+        doc_meta, question, kb_version=(payload.kb_version or "v1")
+    )
 
     user_msg: Dict[str, Any] = {"role": "user", "content": question}
     assistant_msg: Dict[str, Any] = {

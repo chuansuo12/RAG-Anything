@@ -12,4 +12,5 @@ class ConversationCreate(BaseModel):
 
 class MessageCreate(BaseModel):
     question: str
+    kb_version: Optional[str] = "v1"
 

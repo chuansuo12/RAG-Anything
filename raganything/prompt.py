@@ -351,3 +351,225 @@ PROMPTS["QUERY_GENERIC_ANALYST_SYSTEM"] = (
 PROMPTS["QUERY_ENHANCEMENT_SUFFIX"] = (
     "\n\nPlease provide a comprehensive answer based on the user query and the provided multimodal content information."
 )
+
+"""
+Product information extraction prompts.
+
+We split the extraction into multiple stages to ensure that long documents
+and complex products can still be handled with sufficient context:
+
+1) Extract core product-level information.
+2) Identify a list of components and then enrich each component separately.
+3) Identify a list of features and then enrich each feature separately.
+4) Run a final consolidation step to align everything with the target schema.
+"""
+
+# 1. Product-level extraction
+PROMPTS["PRODUCT_INFO_PRODUCT_SYSTEM"] = (
+    "You are an expert information extraction system. "
+    "Your task is to extract ONLY product-level information from the document. "
+    "Focus on overall product name, brand, images (if any), offers, and a concise description. "
+    "Return ONLY valid JSON strictly following the provided product-level schema shape. "
+    "If a field is not mentioned, use null or empty list."
+)
+
+PROMPTS[
+    "product_info_product_prompt"
+] = """You are given:
+
+1) A product-level information schema (JSON):
+{schema_json}
+
+2) Document content about a product:
+{content}
+
+Task:
+- Extract ONLY product-level information from the content according to the schema.
+- Ignore detailed components, features, and low-level parameters in this step.
+- Keep the JSON shape identical to the given schema (same keys, nesting, array vs object types).
+- For each field, fill in values mentioned in the content.
+- If you are unsure or the field is not present, use null or [].
+
+Return ONLY the filled JSON (no comments, no extra text)."""
+
+
+# 2. Component list extraction
+PROMPTS["PRODUCT_INFO_COMPONENT_LIST_SYSTEM"] = (
+    "You are an expert at identifying product components and parts. "
+    "Your goal is to list all major components, modules, or included items of the product. "
+    "Do NOT invent components that are not clearly implied by the document."
+)
+
+PROMPTS[
+    "product_info_component_list_prompt"
+] = """You are given:
+
+1) High-level product information (JSON):
+{product_json}
+
+2) Document content about the product:
+{content}
+
+Task:
+- Identify the main physical or logical components / parts / modules / accessories of the product.
+- For each component, output a lightweight JSON object with fields: id, name, and description.
+- The id should be a short, unique string (e.g. "comp_camera", "comp_battery") derived from the name.
+- The description should summarize what this component is or does.
+- Do NOT include detailed parameters or attributes in this step.
+
+Return ONLY a JSON array named "components", like:
+{{
+  "components": [
+    {{
+      "id": "comp_example",
+      "name": "Example Component",
+      "description": "Short description of what this component is."
+    }}
+  ]
+}}"""
+
+
+# 3. Component detail enrichment
+PROMPTS["PRODUCT_INFO_COMPONENT_DETAIL_SYSTEM"] = (
+    "You are an expert at extracting detailed attributes for a single component of a product. "
+    "Given the component name and related document content, you must fill the component schema "
+    "with concrete attributes and values, including supporting source snippets when possible."
+)
+
+PROMPTS[
+    "product_info_component_detail_prompt"
+] = """You are given:
+
+1) High-level product information (JSON):
+{product_json}
+
+2) A single component skeleton (JSON) with id, name, and description:
+{component_skeleton_json}
+
+3) Document content that is specifically relevant to this component:
+{content}
+
+4) A component-level schema (JSON) describing the desired structure:
+{component_schema_json}
+
+Task:
+- Based on the content, fill in the component schema fields for THIS component only.
+- Keep the JSON shape identical to the given component schema (same keys, nesting, array vs object types).
+- For each attribute, fill in name, value, unit (if any), and a short `source` snippet from the content.
+- Do NOT modify the component id.
+- If you are unsure or a field is not present, use null or [].
+
+Return ONLY the filled component JSON (no comments, no extra text)."""
+
+
+# 4. Feature list extraction
+PROMPTS["PRODUCT_INFO_FEATURE_LIST_SYSTEM"] = (
+    "You are an expert at identifying product features and capabilities. "
+    "Your goal is to list the key functional features or modes of the product, "
+    "and link them to components when the relationship is clear."
+)
+
+PROMPTS[
+    "product_info_feature_list_prompt"
+] = """You are given:
+
+1) High-level product information (JSON):
+{product_json}
+
+2) A list of components (JSON):
+{components_json}
+
+3) Document content about the product:
+{content}
+
+Task:
+- Identify the main functional features / capabilities / modes of the product.
+- For each feature, output a lightweight JSON object with fields: id, name, description, component_id (if known).
+- The id should be a short, unique string (e.g. "feat_auto_focus", "feat_night_mode") derived from the name.
+- If a feature is clearly associated with a component, set component_id to that component's id; otherwise use null.
+- Do NOT include detailed parameters or attributes in this step.
+
+Return ONLY a JSON array named "features", like:
+{{
+  "features": [
+    {{
+      "id": "feat_example",
+      "name": "Example Feature",
+      "description": "What this feature does, as described in the document.",
+      "component_id": "comp_example"
+    }}
+  ]
+}}"""
+
+
+# 5. Feature detail enrichment
+PROMPTS["PRODUCT_INFO_FEATURE_DETAIL_SYSTEM"] = (
+    "You are an expert at extracting detailed parameters and attributes for a single feature of a product. "
+    "Given the feature name and related document content, you must fill the feature schema with concrete "
+    "parameters, attributes, and supporting source snippets."
+)
+
+PROMPTS[
+    "product_info_feature_detail_prompt"
+] = """You are given:
+
+1) High-level product information (JSON):
+{product_json}
+
+2) A list of components (JSON, may be empty):
+{components_json}
+
+3) A single feature skeleton (JSON) with id, name, description, and component_id:
+{feature_skeleton_json}
+
+4) Document content that is specifically relevant to this feature:
+{content}
+
+5) A feature-level schema (JSON) describing the desired structure:
+{feature_schema_json}
+
+Task:
+- Based on the content, fill in the feature schema fields for THIS feature only.
+- Keep the JSON shape identical to the given feature schema (same keys, nesting, array vs object types).
+- For parameters and attributes, fill in name, value, unit (if any), and a short `source` snippet from the content.
+- Do NOT modify the feature id or component_id.
+- If you are unsure or a field is not present, use null or [].
+
+Return ONLY the filled feature JSON (no comments, no extra text)."""
+
+
+# 6. Final consolidation into full product info schema
+PROMPTS["PRODUCT_INFO_FINALIZE_SYSTEM"] = (
+    "You are an expert product information consolidator. "
+    "Given a target schema and partially filled product / components / features, "
+    "you must merge them into a single, consistent JSON object that strictly follows the schema."
+)
+
+PROMPTS[
+    "product_info_finalize_prompt"
+] = """You are given:
+
+1) The target product information schema (JSON):
+{schema_json}
+
+2) A partially filled product information object (JSON) that may include:
+   - product
+   - components
+   - features
+   - parameters
+   - attributes
+{partial_json}
+
+Task:
+- Merge the partial information into a single object that strictly follows the target schema.
+- Preserve all concrete values from the partial JSON whenever possible.
+- You MAY:
+  - Normalize ids and references for consistency.
+  - Move fields into the correct place to match the schema.
+- You MUST NOT:
+  - Invent new components, features, parameters, or attributes that are not implied by the partial JSON.
+  - Remove existing meaningful values unless they clearly conflict with the schema structure.
+- For any field not present in the partial JSON, fill it as null or [] according to the schema.
+
+Return ONLY the final product information JSON (no comments, no extra text)."""
+

@@ -32,6 +32,17 @@
               知识库管理
             </button>
           </div>
+          <div class="flex items-center gap-2">
+            <span class="text-[11px] text-slate-400">版本</span>
+            <select
+              id="kb-version"
+              class="rounded-lg bg-slate-950 border border-slate-700 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-cyan-500"
+              title="切换后将同时影响问答与图谱视图"
+            >
+              <option value="v1">v1</option>
+              <option value="v2">v2</option>
+            </select>
+          </div>
           <span id="status-indicator" class="px-2 py-1 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-400/30">就绪</span>
         </div>
       </div>
@@ -126,6 +137,14 @@
                   <span id="kb-current-name" class="max-w-[180px] truncate text-slate-200"></span>
                 </div>
                 <button
+                  id="kb-regenerate-btn"
+                  type="button"
+                  class="px-2 py-1.5 rounded-md bg-cyan-500/90 text-slate-900 text-[11px] font-medium hover:bg-cyan-400 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="重新生成索引：重建 v1；若当前版本为 v2，则重建 v1 后再生成 v2"
+                >
+                  重新生成
+                </button>
+                <button
                   id="kb-delete-btn"
                   type="button"
                   class="px-2 py-1.5 rounded-md bg-red-500/90 text-slate-50 text-[11px] font-medium hover:bg-red-400 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -147,6 +166,35 @@
               >
                 在新窗口中打开原始 PDF
               </a>
+              <div
+                id="kb-product-schema-section"
+                class="hidden mt-2 rounded-lg border border-slate-800 bg-slate-950/60 overflow-hidden"
+              >
+                <div class="px-2 py-1 border-b border-slate-800 flex items-center justify-between">
+                  <div class="flex items-center gap-2">
+                    <button
+                      id="kb-product-schema-toggle"
+                      type="button"
+                      class="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-200 hover:text-slate-50"
+                    >
+                      <span id="kb-product-schema-toggle-icon">▶</span>
+                      <span>Product Info</span>
+                    </button>
+                    <span class="text-[11px] text-slate-500">JSON</span>
+                  </div>
+                  <button
+                    id="kb-product-schema-copy"
+                    type="button"
+                    class="px-2 py-0.5 rounded-md border border-slate-700 text-[11px] text-slate-200 hover:bg-slate-800"
+                  >
+                    复制
+                  </button>
+                </div>
+                <pre
+                  id="kb-product-schema-content"
+                  class="hidden max-h-72 overflow-auto p-2 text-[11px] text-slate-200 whitespace-pre-wrap leading-relaxed"
+                ></pre>
+              </div>
               <div id="kb-graph-section" class="mt-3 space-y-2">
                 <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <div class="flex items-center gap-2">
@@ -213,6 +261,16 @@
                 <button id="upload-btn" class="px-3 py-1.5 rounded-md bg-emerald-500 text-slate-900 text-xs font-medium hover:bg-emerald-400">
                   上传并解析为知识库
                 </button>
+              </div>
+              <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <label class="inline-flex items-center gap-2 text-xs text-slate-400">
+                  <input id="upload-generate-v2" type="checkbox" class="accent-cyan-500" />
+                  同时生成 v2（推荐：需要在问答/图谱使用 v2 时勾选）
+                </label>
+                <label class="inline-flex items-center gap-2 text-xs text-slate-400">
+                  <input id="upload-force-v1-then-v2" type="checkbox" class="accent-cyan-500" />
+                  强制先重建 v1 再生成 v2（更耗时）
+                </label>
               </div>
               <p class="text-xs text-slate-500">上传后会自动调用 MinerU + RAGAnything 进行解析，并构建可供问答使用的知识库索引。</p>
             </div>

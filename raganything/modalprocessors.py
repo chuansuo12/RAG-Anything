@@ -491,8 +491,11 @@ class BaseModalProcessor:
         await self.text_chunks_db.upsert({chunk_id: chunk_data})
 
         # Store chunk in vector database for retrieval
+        # Explicitly store `id` so that upstream retrieval code (e.g. LightRAG's
+        # operate.py) can expose it as chunk_id in query results.
         chunk_vdb_data = {
             chunk_id: {
+                "id": chunk_id,
                 "content": modal_chunk,
                 "full_doc_id": actual_doc_id,
                 "tokens": tokens,
@@ -706,8 +709,10 @@ class BaseModalProcessor:
             return
 
         # Create text chunk for vector database
+        # Explicitly store `id` so that retrieval code can expose chunk_id.
         chunk_vdb_data = {
             chunk_id: {
+                "id": chunk_id,
                 "content": chunk_data["content"],
                 "full_doc_id": chunk_id,
                 "tokens": chunk_data["tokens"],

@@ -13,6 +13,11 @@ from pathlib import Path
 
 from raganything.base import DocStatus
 from raganything.parser import MineruParser, MineruExecutionError, get_parser
+from raganything.product import (
+    load_schema_template,
+    merge_product_info_into_v2_graph,
+    resolve_working_dir_v2 as product_resolve_working_dir_v2,
+)
 from raganything.utils import (
     separate_content,
     insert_text_content,
@@ -454,6 +459,230 @@ class ProcessorMixin:
                 self.logger.info(f"  - {block_type}: {count}")
 
         return content_list, doc_id
+
+    async def _maybe_await(self, value):
+        if asyncio.iscoroutine(value) or asyncio.isfuture(value):
+            return await value
+        return value
+
+    def _robust_json_parse(self, response: str) -> dict:
+        import re
+
+        if not response or not isinstance(response, str):
+            return {}
+
+        cleaned = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL | re.IGNORECASE)
+        cleaned = re.sub(
+            r"<thinking>.*?</thinking>", "", cleaned, flags=re.DOTALL | re.IGNORECASE
+        )
+
+        candidates = []
+        candidates.extend(
+            re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, re.DOTALL)
+        )
+
+        brace_count = 0
+        start_pos = -1
+        for i, ch in enumerate(cleaned):
+            if ch == "{":
+                if brace_count == 0:
+                    start_pos = i
+                brace_count += 1
+            elif ch == "}":
+                brace_count -= 1
+                if brace_count == 0 and start_pos != -1:
+                    candidates.append(cleaned[start_pos : i + 1])
+
+        simple_match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if simple_match:
+            candidates.append(simple_match.group(0))
+
+        for cand in candidates:
+            try:
+                return json.loads(cand)
+            except Exception:
+                continue
+
+        # Basic cleanup fallback (trailing commas)
+        for cand in candidates:
+            try:
+                fixed = re.sub(r",(\s*[}\]])", r"\1", cand.strip())
+                return json.loads(fixed)
+            except Exception:
+                continue
+
+        return {}
+
+    async def _flush_lightrag_to_disk(self):
+        if not getattr(self, "lightrag", None):
+            return
+
+        storages = [
+            getattr(self.lightrag, "text_chunks", None),
+            getattr(self.lightrag, "chunks_vdb", None),
+            getattr(self.lightrag, "entities_vdb", None),
+            getattr(self.lightrag, "relationships_vdb", None),
+            getattr(self.lightrag, "doc_status", None),
+            getattr(self.lightrag, "llm_response_cache", None),
+            getattr(self.lightrag, "full_entities", None),
+            getattr(self.lightrag, "full_relations", None),
+        ]
+        for s in storages:
+            if s is None:
+                continue
+            cb = getattr(s, "index_done_callback", None)
+            if cb:
+                await self._maybe_await(cb())
+
+        g = getattr(self.lightrag, "chunk_entity_relation_graph", None)
+        if g is not None:
+            cb = getattr(g, "index_done_callback", None)
+            if cb:
+                await self._maybe_await(cb())
+
+    def _resolve_working_dir_v2(self) -> str:
+        return product_resolve_working_dir_v2(
+            getattr(self.config, "working_dir", "./rag_storage"),
+            getattr(self.config, "product_schema_working_dir", ""),
+        )
+
+    async def _load_product_info_schema_template(self) -> dict:
+        """Load product info schema from v2 dir or default (delegates to raganything.product)."""
+        return load_schema_template(self._resolve_working_dir_v2())
+
+    def _build_doc_meta_for_product_agent(self, doc_id: str) -> dict:
+        """
+        Build doc_meta dict for create_product_info_orchestrator_agent.
+        Uses current processor config (working_dir). parsed_dir is omitted
+        unless available on config, so PageContextTool may not be registered.
+        """
+        base = Path(getattr(self.config, "working_dir", "./rag_storage")).resolve()
+        doc_meta: Dict[str, Any] = {
+            "doc_id": doc_id,
+            "working_dir": str(base),
+        }
+        parsed_dir = getattr(self.config, "parser_output_dir", None)
+        if parsed_dir and Path(parsed_dir).exists():
+            doc_meta["parsed_dir"] = str(Path(parsed_dir).resolve())
+        return doc_meta
+
+    async def _extract_product_info(self, doc_id: str, schema_template: dict) -> dict:
+        """
+        Extract product information using the Product Info Orchestrator Agent.
+        The agent uses RAG tools and sub-agents to fill the schema; result is
+        parsed from the agent output and returned as a dict.
+        """
+        from agent import create_product_info_orchestrator_agent
+
+        doc_meta = self._build_doc_meta_for_product_agent(doc_id)
+        orchestrator = create_product_info_orchestrator_agent(
+            doc_meta=doc_meta,
+            product_schema=schema_template,
+            include_history=False,
+            verbose=getattr(self.config, "product_info_agent_verbose", False),
+        )
+        user_task = (
+            "Using the document(s) in the current knowledge base, extract the complete product "
+            "information strictly following the provided Product Schema.\n"
+            "You are the parent Orchestrator Agent and may ONLY use `create_and_run_agent` to create "
+            "Sub Agents. Sub Agents may use RAG tools to access the document and return JSON fragments.\n"
+            "In the end, return ONLY a single JSON object that strictly matches the Schema, with no "
+            "extra explanation text."
+        )
+        result = await orchestrator.ainvoke({"input": user_task})
+        output = result.get("output", result)
+        if isinstance(output, dict):
+            return output
+        text = str(output) if output else ""
+        if not text.strip():
+            return {}
+        return self._robust_json_parse(text)
+
+    async def _merge_product_info_into_v2_graph(
+        self,
+        doc_id: str,
+        file_path_ref: str,
+        info: dict,
+        force_rebuild_v2: bool = False,
+    ) -> str | None:
+        if not info:
+            return None
+        await self._flush_lightrag_to_disk()
+        src_dir = Path(getattr(self.config, "working_dir", "./rag_storage")).resolve()
+        dst_dir = Path(self._resolve_working_dir_v2()).resolve()
+        return await merge_product_info_into_v2_graph(
+            doc_id,
+            file_path_ref,
+            info,
+            src_dir,
+            dst_dir,
+            llm_model_func=self.llm_model_func,
+            embedding_func=self.embedding_func,
+            lightrag_kwargs=getattr(self, "lightrag_kwargs", {}) or {},
+            merge_threshold=float(getattr(self.config, "product_schema_merge_threshold", 0.85)),
+            force_rebuild_v2=force_rebuild_v2,
+        )
+
+    async def generate_product_schema_v2(
+        self,
+        doc_id: str,
+        file_path_ref: str,
+        force_rebuild_v2: bool = False,
+    ) -> str | None:
+        """
+        Backward-compatible API: generate product "v2" index from an existing v1 index.
+
+        Note:
+        - Original behavior是抽取 schema；现在改为根据给定/默认 schema 抽取 product 信息并写入 v2 图谱。
+        - 保留方法名以兼容现有 Web 路由调用。
+        """
+        try:
+            await self._ensure_lightrag_initialized()
+            self.logger.info(
+                f"[doc_id={doc_id}] generate_product_schema_v2 called with "
+                f"file_path_ref={file_path_ref}, force_rebuild_v2={force_rebuild_v2}"
+            )
+            schema_template = await self._load_product_info_schema_template()
+            self.logger.info(
+                f"[doc_id={doc_id}] Loaded product info schema template keys: "
+                f"{list(schema_template.keys()) if isinstance(schema_template, dict) else type(schema_template)}"
+            )
+            info = await self._extract_product_info(doc_id, schema_template)
+            if not info:
+                self.logger.info(
+                    f"[doc_id={doc_id}] No product info extracted (empty result)."
+                )
+                return None
+            self.logger.info(
+                f"[doc_id={doc_id}] Product info extracted: "
+                f"top-level keys={list(info.keys()) if isinstance(info, dict) else type(info)}"
+            )
+            v2_dir = await self._merge_product_info_into_v2_graph(
+                doc_id=doc_id,
+                file_path_ref=file_path_ref,
+                info=info,
+                force_rebuild_v2=force_rebuild_v2,
+            )
+            self.logger.info(
+                f"[doc_id={doc_id}] _merge_product_info_into_v2_graph returned: {v2_dir}"
+            )
+            return v2_dir
+        except Exception as e:
+            try:
+                import traceback
+
+                tb = traceback.format_exc()
+                msg = (
+                    f"generate_product_schema_v2 failed for doc_id={doc_id}, "
+                    f"file_path_ref={file_path_ref}: {e}"
+                )
+                self.logger.error(msg)
+                self.logger.debug(tb)
+                self.logger.error(f"[doc_id={doc_id}] {msg}\n{tb}")
+            except Exception:
+                # Avoid masking original error if logging fails
+                pass
+            return None
 
     async def _process_multimodal_content(
         self,
@@ -909,7 +1138,10 @@ class ProcessorMixin:
             file_ref = self._get_file_reference(file_path)
 
             # Build LightRAG standard chunk format
+            # Explicitly store `id` so that upstream retrieval code (e.g. LightRAG's
+            # operate.py) can expose it as chunk_id in query results.
             chunks[chunk_id] = {
+                "id": chunk_id,
                 "content": formatted_chunk_content,  # Now uses the templated content
                 "tokens": tokens,
                 "full_doc_id": doc_id,
@@ -1529,6 +1761,24 @@ class ProcessorMixin:
                 f"No multimodal content found in document {doc_id}, marked multimodal processing as complete"
             )
 
+        # Step 5: Extract product information after graphs are built, merge into v2 storage
+        if getattr(self.config, "enable_product_info_extraction", False):
+            try:
+                schema_template = await self._load_product_info_schema_template()
+                info = await self._extract_product_info(doc_id, schema_template)
+                if info:
+                    v2_dir = await self._merge_product_info_into_v2_graph(
+                        doc_id=doc_id, file_path_ref=file_name, info=info
+                    )
+                    if v2_dir:
+                        self.logger.info(
+                            f"Product information extracted and merged into v2 graph at: {v2_dir}"
+                        )
+            except Exception as e:
+                self.logger.warning(
+                    f"Product information extraction/merge failed: {e}"
+                )
+
         self.logger.info(f"Document {file_path} processing complete!")
 
     async def process_document_complete_lightrag_api(
@@ -1860,5 +2110,23 @@ class ProcessorMixin:
             self.logger.debug(
                 f"No multimodal content found in document {doc_id}, marked multimodal processing as complete"
             )
+
+        # Step 4: Extract product information after graphs are built, merge into v2 storage
+        if getattr(self.config, "enable_product_info_extraction", False):
+            try:
+                schema_template = await self._load_product_info_schema_template()
+                info = await self._extract_product_info(doc_id, schema_template)
+                if info:
+                    v2_dir = await self._merge_product_info_into_v2_graph(
+                        doc_id=doc_id, file_path_ref=file_ref, info=info
+                    )
+                    if v2_dir:
+                        self.logger.info(
+                            f"Product information extracted and merged into v2 graph at: {v2_dir}"
+                        )
+            except Exception as e:
+                self.logger.warning(
+                    f"Product information extraction/merge failed: {e}"
+                )
 
         self.logger.info(f"Content list insertion complete for: {file_path}")

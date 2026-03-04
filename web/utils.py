@@ -108,6 +108,10 @@ def _extract_reference_ids_from_answer(answer: str) -> List[str]:
     返回值为字符串形式的数字 id 列表，如 ["3", "4", "5"]，按出现顺序排列。
     若未找到 `### References` 或没有合法条目，则返回空列表。
     """
+    # 防御性处理：上游有可能传入 None 或非字符串类型
+    if not isinstance(answer, str):
+        answer = "" if answer is None else str(answer)
+
     # 找到 "### References" 开头的位置
     m = re.search(r"^### References\s*$", answer, re.MULTILINE)
     if not m:
