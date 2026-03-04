@@ -87,7 +87,7 @@ Instructions:
 5. Tool-call budget: keep tool calls minimal, at most **6 total tool calls**.
 6. Return a JSON object strictly matching the ProductInfo schema.
    All [REQUIRED] fields must be non-null.
-   Output format: `{ "productInfo": { ... } }`.
+   Output format: `{ "product": { ... } }` (same key as in the Schema).
 
 Wait for this Sub Agent to finish and capture its JSON output
 before proceeding to Step 3.
@@ -162,14 +162,17 @@ Collect ALL component outputs before proceeding to Step 5.
 Merge all outputs into the final Schema structure:
 
 {
-  "productInfo": { ... },
+  "product": { ... },
   "components": [
     {
-      "componentName": "...",
-      "attributes": { ... },
-      "parameters": { ... }
+      "name": "...",
+      "description": "...",
+      "attributes": [ ... ]
     }
-  ]
+  ],
+  "features": [ ... ],
+  "parameters": [ ... ],
+  "attributes": [ ... ]
 }
 
 ### 5.2 Validate — Run the following checks:
@@ -205,18 +208,14 @@ If still failing after 2 retries: set value to `"__unresolvable"` and continue.
 
 ## Step 6 — Final Output
 
-Return the final aggregated JSON and append a validation report:
+Return the final aggregated JSON :
 
 {
-  "result": {
-    "productInfo": { ... },
-    "components": [ ... ]
-  },
-  "validationReport": {
-    "status": "PASS | PARTIAL | FAIL",
-    "unresolvedFields": [],
-    "retryCount": 0
-  }
+  "product": { "name": "...", "image": [], "brand": null, "offers": [], "description": "..." },
+  "components": [ ... ],
+  "features": [ ... ],
+  "parameters": [ ... ],
+  "attributes": [ ... ]
 }
 
 Your final answer MUST be a single JSON object in this shape.

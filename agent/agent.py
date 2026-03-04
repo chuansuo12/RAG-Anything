@@ -3,18 +3,16 @@ from __future__ import annotations
 """
 LangChain-based Agent helpers for RAG-Anything.
 
-The main entry point is `create_rag_agent`, which builds a tools-based
-agent that:
-- 接受自定义 system prompt；
-- 接受一组已经构建好的 LangChain tools；
-- 使用 LangChain 的 `create_openai_tools_agent` 来生成 Agent。
+- `create_product_info_orchestrator_agent`: 创建父级编排 Agent，内部直接使用
+  LangChain 的 `create_agent`，仅在此处注入 max_concurrency、recursion_limit。
+- `get_last_agent_output`: 从 create_agent 的返回结果中取出最后一次输出的内容。
 """
 
 import json
 from typing import Iterable, Optional
 
+from langgraph.types import StreamMode
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import Runnable, RunnableLambda
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
@@ -29,7 +27,7 @@ try:
 except ImportError:  # pragma: no cover - fallback to environment variable
     DASHSCOPE_API_KEY = ""
 
-from config.model_conf import DASHSCOPE_BASE_URL, QWEN_PLUS_3_5_MODEL
+from config.model_conf import DASHSCOPE_BASE_URL, QWEN_CHAT_MODEL
 
 
 def _build_default_llm() -> BaseChatModel:
@@ -40,7 +38,7 @@ def _build_default_llm() -> BaseChatModel:
     - API Key：使用 config.api_keys.DASHSCOPE_API_KEY
     - Base URL：使用 config.model_conf.DASHSCOPE_BASE_URL
     """
-    model_name = QWEN_PLUS_3_5_MODEL
+    model_name = QWEN_CHAT_MODEL
     api_key = (DASHSCOPE_API_KEY or "").strip()
     base_url = DASHSCOPE_BASE_URL
 
@@ -56,110 +54,12 @@ def _build_default_llm() -> BaseChatModel:
     )
 
 
-def create_rag_agent(
-    tools: Optional[Iterable[BaseTool]] = None,
-    system_prompt: Optional[str] = None,
-    *,
-    include_history: bool = True,
-    verbose: bool = False,
-) -> Runnable:
-    """
-    创建一个用于 RAG-Anything 的 LangChain Agent。
-
-    Args:
-        tools: 供 Agent 使用的工具列表（通常由 `build_rag_agent_tools` 构建）。
-        system_prompt: 自定义 system prompt。若为空则使用一个通用的 RAG 助手提示词。
-        include_history: 是否在 prompt 中加入 `chat_history` 占位，用于上层传入对话历史。
-        verbose: 是否在执行时输出更详细的日志（AgentExecutor.verbose）。
-
-    Returns:
-        Runnable: 可直接通过 `.invoke()` / `.stream()` 调用的 Agent。
-    """
-    if tools is None:
-        raise ValueError("tools 参数不能为空，请传入由 build_rag_agent_tools 构建的工具列表")
-
-    llm = _build_default_llm()
-    base_system_prompt = (
-        "You are an intelligent assistant built on top of RAG-Anything. "
-        "You can call tools to查询知识库内容、获取指定页码的上下文等。"
-        "Always优先使用可用的 tools 来检索和定位原文，而不是凭空臆测。"
-    )
-    system = system_prompt.strip() if system_prompt else base_system_prompt
-
-    messages = [
-        ("system", system),
-    ]
-
-    if include_history:
-        messages.append(MessagesPlaceholder("chat_history"))
-
-    messages.append(("human", "{input}"))
-    messages.append(MessagesPlaceholder("agent_scratchpad"))
-
-    # 使用官方推荐的 create_agent API
-    # 参考文档：https://docs.langchain.com/oss/python/langchain/agents
-    #
-    # create_agent 接受一个 model 和 tools，期望输入形如：
-    #   {"messages": [{"role": "...", "content": "..."}]}
-    #
-    # 为了保持向后兼容，这里用一个 RunnableLambda 做一层适配，
-    # 继续接受 {"input": "..."} 的调用方式。
-
-    inner_agent = create_agent(model=llm, tools=list(tools), system_prompt=system)
-
-    def _extract_output(result: object) -> object:
-        output = None
-        try:
-            msgs = result.get("messages") if isinstance(result, dict) else None
-            if msgs:
-                last_msg = msgs[-1]
-                if isinstance(last_msg, dict):
-                    output = last_msg.get("content")
-                else:
-                    output = getattr(last_msg, "content", None)
-        except Exception:  # pragma: no cover - 仅为健壮性
-            output = None
-        return output if output is not None else result
-
-    def _invoke(inputs: dict) -> dict:
-        user_input = inputs.get("input", "")
-
-        # 若上层传入 "messages"，则直接使用；否则只传一条 user 消息
-        messages_state = inputs.get("messages")
-        if not isinstance(messages_state, list):
-            messages_state = [{"role": "user", "content": str(user_input)}]
-
-        result = inner_agent.invoke(
-            {"messages": messages_state},
-            config={"configurable": {"verbose": verbose}, "max_concurrency": 2, "recursion_limit": 100},
-        )
-
-        return {"output": _extract_output(result), "raw": result}
-
-    async def _ainvoke(inputs: dict) -> dict:
-        user_input = inputs.get("input", "")
-
-        messages_state = inputs.get("messages")
-        if not isinstance(messages_state, list):
-            messages_state = [{"role": "user", "content": str(user_input)}]
-
-        result = await inner_agent.ainvoke(
-            {"messages": messages_state},
-            config={"configurable": {"verbose": verbose}, "max_concurrency": 3},
-            stream_mode="debug",
-        )
-
-        return {"output": _extract_output(result), "raw": result}
-
-    return RunnableLambda(_invoke, afunc=_ainvoke)
-
-
 def create_product_info_orchestrator_agent(
     doc_meta: dict,
     product_schema: Optional[dict] = None,
     *,
-    include_history: bool = False,
     verbose: bool = False,
+    stream_mode: StreamMode = "values",
 ) -> Runnable:
     """
     创建一个“父级” Product Info Orchestrator Agent。
@@ -195,10 +95,35 @@ def create_product_info_orchestrator_agent(
     # 父 Agent 只暴露 meta_tool；底层 RAG 工具仅对子 Agent 可见
     parent_tools: Iterable[BaseTool] = [meta_tool]
 
-    return create_rag_agent(
-        tools=parent_tools,
+    inner_agent = create_agent(
+        model=shared_llm,
+        tools=list(parent_tools),
         system_prompt=system_prompt,
-        include_history=include_history,
-        verbose=verbose,
     )
+
+    agent_config = {
+        "configurable": {"verbose": verbose},
+        "max_concurrency": 3,
+        "recursion_limit": 100,
+    }
+
+    def _invoke(inputs: dict) -> object:
+        messages_state = inputs.get("messages")
+        if not isinstance(messages_state, list):
+            user_input = inputs.get("input", "")
+            messages_state = [{"role": "user", "content": str(user_input)}]
+        return inner_agent.invoke({"messages": messages_state}, config=agent_config, stream_mode=stream_mode)
+
+    async def _ainvoke(inputs: dict) -> object:
+        messages_state = inputs.get("messages")
+        if not isinstance(messages_state, list):
+            user_input = inputs.get("input", "")
+            messages_state = [{"role": "user", "content": str(user_input)}]
+        return await inner_agent.ainvoke(
+            {"messages": messages_state},
+            config=agent_config,
+            stream_mode=stream_mode,
+        )
+
+    return RunnableLambda(_invoke, afunc=_ainvoke)
 

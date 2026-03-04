@@ -572,14 +572,14 @@ class ProcessorMixin:
         The agent uses RAG tools and sub-agents to fill the schema; result is
         parsed from the agent output and returned as a dict.
         """
-        from agent import create_product_info_orchestrator_agent
+        from agent import create_product_info_orchestrator_agent, get_last_ai_message_content
 
         doc_meta = self._build_doc_meta_for_product_agent(doc_id)
         orchestrator = create_product_info_orchestrator_agent(
             doc_meta=doc_meta,
             product_schema=schema_template,
-            include_history=False,
             verbose=getattr(self.config, "product_info_agent_verbose", False),
+            stream_mode="values",
         )
         user_task = (
             "Using the document(s) in the current knowledge base, extract the complete product "
@@ -587,16 +587,11 @@ class ProcessorMixin:
             "You are the parent Orchestrator Agent and may ONLY use `create_and_run_agent` to create "
             "Sub Agents. Sub Agents may use RAG tools to access the document and return JSON fragments.\n"
             "In the end, return ONLY a single JSON object that strictly matches the Schema, with no "
-            "extra explanation text."
+            "extra explanation text."        
         )
         result = await orchestrator.ainvoke({"input": user_task})
-        output = result.get("output", result)
-        if isinstance(output, dict):
-            return output
-        text = str(output) if output else ""
-        if not text.strip():
-            return {}
-        return self._robust_json_parse(text)
+        last_output = get_last_ai_message_content(result) or ""
+        return self._robust_json_parse(last_output)
 
     async def _merge_product_info_into_v2_graph(
         self,

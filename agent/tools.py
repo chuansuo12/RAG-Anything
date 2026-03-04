@@ -33,10 +33,22 @@ from web.rag_service import (
     get_doc_graph_node_detail,
 )
 from raganything.utils import encode_image_to_base64, validate_image_file
+from raganything.product.resolve import resolve_working_dir_v2
 from llm import vision_model_func
 
 
 logger = logging.getLogger(__name__)
+
+
+_ENTITY_DESC_MAX_CHARS = 200
+_CHUNK_CONTENT_MAX_CHARS = 300
+_TRUNCATED_SUFFIX = "...[truncated]"
+
+
+def _truncate(text: str, limit: int) -> str:
+    if not isinstance(text, str) or len(text) <= limit:
+        return text
+    return text[:limit] + _TRUNCATED_SUFFIX
 
 
 def _strip_query_result_for_agent(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -44,6 +56,7 @@ def _strip_query_result_for_agent(data: Dict[str, Any]) -> Dict[str, Any]:
     从 query 返回结果中提取并清洗 entity 列表，减小 token 占用。
 
     仅返回 `entities` 字段，其它字段（relationships/chunks/references）不再包含在结果中。
+    长文本字段（description）会被截断，Agent 可通过 kb_entity_neighbors 获取完整内容。
     """
     if not isinstance(data, dict):
         return {"entities": []}
@@ -52,19 +65,26 @@ def _strip_query_result_for_agent(data: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(entities_raw, list):
         entities_raw = []
 
-    entities = [
-        {
+    entities = []
+    for e in entities_raw:
+        if not isinstance(e, dict):
+            continue
+        cleaned = {
             k: v
-            for k, v in (e if isinstance(e, dict) else {}).items()
+            for k, v in e.items()
             if k not in ("file_path", "created_at")
         }
-        for e in entities_raw
-    ]
+        if "description" in cleaned:
+            cleaned["description"] = _truncate(cleaned["description"], _ENTITY_DESC_MAX_CHARS)
+        entities.append(cleaned)
     return {"entities": entities}
 
 
 def _strip_chunks_result_for_agent(data: Dict[str, Any]) -> Dict[str, Any]:
-    """从 query 返回结果中提取并清洗 chunk 列表，仅保留与内容理解直接相关的字段。"""
+    """从 query 返回结果中提取并清洗 chunk 列表，仅保留与内容理解直接相关的字段。
+
+    长文本字段（content）会被截断，Agent 可通过 kb_chunks_by_id 获取完整内容。
+    """
     if not isinstance(data, dict):
         return {"chunks": []}
 
@@ -72,14 +92,18 @@ def _strip_chunks_result_for_agent(data: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(chunks_raw, list):
         chunks_raw = []
 
-    chunks = [
-        {
+    chunks = []
+    for c in chunks_raw:
+        if not isinstance(c, dict):
+            continue
+        cleaned = {
             k: v
-            for k, v in (c if isinstance(c, dict) else {}).items()
+            for k, v in c.items()
             if k not in ("reference_id", "file_path", "created_at")
         }
-        for c in chunks_raw
-    ]
+        if "content" in cleaned:
+            cleaned["content"] = _truncate(cleaned["content"], _CHUNK_CONTENT_MAX_CHARS)
+        chunks.append(cleaned)
     return {"chunks": chunks}
 
 
@@ -119,9 +143,11 @@ class RAGQueryTool(BaseTool):
 
     name: str = "kb_query"
     description: str = (
-        "Query the currently bound knowledge base and return structured retrieval data "
-        "(entities, relationships, chunks, references). "
-        "Use this tool whenever you need to answer questions based on PDF / document content."
+        "Query the currently bound knowledge base and return entity summaries "
+        "(with truncated descriptions). "
+        "Use this tool whenever you need to answer questions based on PDF / document content. "
+        "NOTE: entity descriptions are truncated; use `kb_entity_neighbors` with a node id "
+        "to retrieve the full description when needed."
     )
 
     doc_meta: Dict[str, Any]
@@ -181,7 +207,8 @@ class RAGQueryTool(BaseTool):
             )
 
         stripped = _strip_query_result_for_agent(references)
-        logger.info(f"references: {stripped}")
+        n = len(stripped.get("entities", []))
+        logger.info("references: %d entities", n)
         # json.dumps 无“忽略空字段”参数，空值已在 _strip_query_result_for_agent 中剔除；不传 indent 保持紧凑
         return json.dumps(stripped, ensure_ascii=False)
 
@@ -200,7 +227,8 @@ class RAGQueryTool(BaseTool):
             top_k=top_k,
         )
         stripped = _strip_query_result_for_agent(references)
-        logger.info(f"references: {stripped}")
+        n = len(stripped.get("entities", []))
+        logger.info("references: %d entities", n)
         # json.dumps 无“忽略空字段”参数，空值已在 _strip_query_result_for_agent 中剔除；不传 indent 保持紧凑
         return json.dumps(stripped, ensure_ascii=False)
 
@@ -215,9 +243,11 @@ class ChunkQueryTool(BaseTool):
 
     name: str = "kb_chunk_query"
     description: str = (
-        "Query the currently bound knowledge base and return only retrieved chunks "
-        "(text blocks) with their metadata. "
-        "Use this tool when you want to reason directly over raw chunks instead of entities."
+        "Query the currently bound knowledge base and return chunk summaries "
+        "(with truncated content). "
+        "Use this tool when you want to reason directly over raw chunks instead of entities. "
+        "NOTE: chunk content is truncated; use `kb_chunks_by_id` with specific chunk ids "
+        "to retrieve the full text when needed."
     )
 
     doc_meta: Dict[str, Any]
@@ -272,7 +302,8 @@ class ChunkQueryTool(BaseTool):
             )
 
         stripped = _strip_chunks_result_for_agent(data)
-        logger.info(f"chunks: {stripped}")
+        n = len(stripped.get("chunks", []))
+        logger.info("chunks: %d entries", n)
         return json.dumps(stripped, ensure_ascii=False)
 
     async def _arun(
@@ -290,7 +321,8 @@ class ChunkQueryTool(BaseTool):
             top_k=top_k,
         )
         stripped = _strip_chunks_result_for_agent(data)
-        logger.info(f"chunks: {stripped}")
+        n = len(stripped.get("chunks", []))
+        logger.info("chunks: %d entries", n)
         return json.dumps(stripped, ensure_ascii=False)
 
 
@@ -616,11 +648,119 @@ class ImageVLMTool(BaseTool):
         )
 
 
+class _ProductInfoInput(BaseModel):
+    filter_type: str = Field(
+        default="all",
+        description=(
+            "Which section of the product info to return. "
+            "Options: 'all' (full JSON), 'product' (product overview only), "
+            "'components' (components list), 'features' (features list), "
+            "'parameters' (product-level parameters), 'attributes' (product-level attributes)."
+        ),
+    )
+    filter_name: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional name to filter a specific component or feature by name. "
+            "Only effective when filter_type is 'components' or 'features'. "
+            "Case-insensitive substring match."
+        ),
+    )
+
+
+class ProductInfoTool(BaseTool):
+    """Return structured Product Info extracted from the document.
+
+    Reads the pre-generated ``product info.json`` from the v2 working directory.
+    Use this as the FIRST tool call to get a high-level map of the product
+    (components, features, parameters) before doing detailed retrieval.
+    """
+
+    name: str = "product_info"
+    description: str = (
+        "Return the structured Product Info (product overview, components, features, "
+        "parameters, attributes) extracted from the document. "
+        "Use this as the FIRST tool call to get a high-level map of the product "
+        "before detailed retrieval. Supports filtering by section or name."
+    )
+
+    doc_meta: Dict[str, Any]
+
+    args_schema: type[BaseModel] = _ProductInfoInput
+
+    def _resolve_product_info_path(self) -> Path:
+        working_dir = (self.doc_meta.get("working_dir") or "").strip()
+        if not working_dir:
+            raise FileNotFoundError("知识库工作目录缺失")
+
+        v2_dir = resolve_working_dir_v2(working_dir)
+        return Path(v2_dir) / "product info.json"
+
+    def _load_product_info(self) -> Dict[str, Any]:
+        info_path = self._resolve_product_info_path()
+        if not info_path.exists():
+            raise FileNotFoundError(
+                f"product info.json not found at {info_path}. "
+                "The v2 index may not have been generated yet."
+            )
+        return json.loads(info_path.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _filter_by_name(items: list, name: str) -> list:
+        lower_name = name.lower()
+        return [
+            item for item in items
+            if isinstance(item, dict)
+            and lower_name in (item.get("name") or "").lower()
+        ]
+
+    def _run(
+        self,
+        filter_type: str = "all",
+        filter_name: Optional[str] = None,
+    ) -> str:
+        try:
+            info = self._load_product_info()
+        except FileNotFoundError as e:
+            return str(e)
+
+        ft = (filter_type or "all").lower().strip()
+
+        if ft == "product":
+            result = {"product": info.get("product", {})}
+        elif ft == "components":
+            items = info.get("components") or []
+            if filter_name:
+                items = self._filter_by_name(items, filter_name)
+            result = {"components": items}
+        elif ft == "features":
+            items = info.get("features") or []
+            if filter_name:
+                items = self._filter_by_name(items, filter_name)
+            result = {"features": items}
+        elif ft == "parameters":
+            result = {"parameters": info.get("parameters") or []}
+        elif ft == "attributes":
+            result = {"attributes": info.get("attributes") or []}
+        else:
+            result = info
+
+        return json.dumps(result, ensure_ascii=False)
+
+    async def _arun(
+        self,
+        filter_type: str = "all",
+        filter_name: Optional[str] = None,
+    ) -> str:
+        return await asyncio.to_thread(self._run, filter_type, filter_name)
+
+
 def build_rag_agent_tools(
     doc_meta: Dict[str, Any],
     *,
     include_page_context_tool: bool = True,
     include_vlm_image_tool: bool = True,
+    include_product_info_tool: bool = True,
 ) -> List[BaseTool]:
     """
     Build a set of LangChain tools for a single knowledge base.
@@ -632,9 +772,11 @@ def build_rag_agent_tools(
         doc_meta: Metadata for a single knowledge base, typically loaded from the web
                   layer's meta.json. Must contain at least `parsed_dir` and `working_dir`.
         include_page_context_tool: Whether to include the page-context viewing tool.
+        include_vlm_image_tool: Whether to include the VLM image analysis tool.
+        include_product_info_tool: Whether to include the product info tool (reads v2 JSON).
 
     Returns:
-        List[BaseTool]: Tools that can be directly passed to `create_rag_agent`.
+        List[BaseTool]: Tools that can be passed to agent creation (e.g. create_agent).
     """
     tools: List[BaseTool] = []
 
@@ -669,6 +811,10 @@ def build_rag_agent_tools(
     # VLM 图像工具：与具体 doc 无关，只依赖全局配置好的 vision_model_func
     if include_vlm_image_tool:
         tools.append(ImageVLMTool())
+
+    # Product Info 工具：读取 v2 working dir 下的 product info.json
+    if include_product_info_tool:
+        tools.append(ProductInfoTool(doc_meta=dict(doc_meta)))
 
     return tools
 
@@ -764,7 +910,7 @@ class CreateAndRunAgentTool(BaseTool):
 
         result = inner_agent.invoke(
             {"messages": messages_state},
-            config={"max_concurrency": 1},
+            config={"max_concurrency": 3},
         )
 
         # 从 LangGraph 风格 state 中抽取最终文本

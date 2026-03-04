@@ -35,6 +35,7 @@ from config.model_conf import (
     QWEN_EMBED_MODEL,
     QWEN_RERANK_MODEL,
     QWEN_RERANK_BASE_URL,
+    QWEN_PLUS_3_5_MODEL,
 )
 
 
@@ -44,23 +45,34 @@ def _get_api_key():
     return key or None
 
 
-def llm_model_func(prompt, system_prompt=None, history_messages=None, **kwargs):
+def get_llm_model_func(
+    model: str = QWEN_CHAT_MODEL,
+    enable_thinking: bool = False,
+):
     """
-    文本对话：调用 Qwen 对话模型（OpenAI 兼容接口）。
-    供 RAGAnything 等使用，与 openai_complete_if_cache 签名一致。
+    返回一个与 llm_model_func 签名一致的文本对话函数，可指定模型与 enable_thinking。
+    默认与 llm_model_func 行为一致；eval 等场景可传入 QWEN_PLUS_3_5_MODEL 与 enable_thinking=True。
     """
-    if history_messages is None:
-        history_messages = []
-    return openai_complete_if_cache(
-        QWEN_CHAT_MODEL,
-        prompt,
-        system_prompt=system_prompt,
-        history_messages=history_messages,
-        api_key=_get_api_key(),
-        base_url=DASHSCOPE_BASE_URL,
-        extra_body={"enable_thinking":False},
-        **kwargs,
-    )
+
+    def _func(prompt, system_prompt=None, history_messages=None, **kwargs):
+        if history_messages is None:
+            history_messages = []
+        return openai_complete_if_cache(
+            model,
+            prompt,
+            system_prompt=system_prompt,
+            history_messages=history_messages,
+            api_key=_get_api_key(),
+            base_url=DASHSCOPE_BASE_URL,
+            extra_body={"enable_thinking": enable_thinking},
+            **kwargs,
+        )
+
+    return _func
+
+
+# 默认文本对话：Flash 模型、关闭 thinking，供 RAG / Web 等常规使用
+llm_model_func = get_llm_model_func()
 
 
 def vision_model_func(

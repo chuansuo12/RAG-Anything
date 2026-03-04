@@ -8,7 +8,7 @@ Model 配置：集中管理默认模型名称与相关 Base URL。
 DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 # 默认模型名（百炼对话 / 视觉 / 向量 / 重排序）
-QWEN_CHAT_MODEL = "qwen3.5-flash-2026-02-23"
+QWEN_CHAT_MODEL = "qwen3.5-flash"
 QWEN_VISION_MODEL = "qwen3-vl-flash"
 QWEN_EMBED_MODEL = "text-embedding-v4"
 QWEN_RERANK_MODEL = "qwen3-rerank"

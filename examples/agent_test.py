@@ -28,6 +28,7 @@ from pathlib import Path
 from agent import (
     build_rag_agent_tools,
     create_product_info_orchestrator_agent,
+    get_last_agent_output,
 )
 from raganything.product import DEFAULT_PRODUCT_INFO_SCHEMA
 from config.api_keys import DASHSCOPE_API_KEY
@@ -101,7 +102,7 @@ async def main() -> None:
     result = await orchestrator.ainvoke({"input": user_task})
 
     # 6. Print the final JSON result from orchestrator
-    output = result.get("output", result)
+    output = get_last_agent_output(result)
     print("===== Agent product_info result =====")
     print(output)
 

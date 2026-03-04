@@ -7,7 +7,7 @@ RAGAnything Eval Script
 - 从 parquet / csv 文件中读取 eval 数据（包含 doc_id / query / Answer）
 - 根据 docid 加载对应的 LightRAG workspace：runtime/source/{docid}/rag_storage
 - 使用 RAGAnything 对每条 query 生成回答
-- 使用给定 Prompt 调用同一套 LLM（llm_model_func）做自动打分（accuracy: 0/1）
+- 使用给定 Prompt 调用评估专用 LLM（QWEN_PLUS_3_5 + enable_thinking）做自动打分（accuracy: 0/1）
 - 统计整体准确率，并将明细保存到输出文件（parquet / jsonl）
 
 依赖：
@@ -40,9 +40,17 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from config.model_conf import QWEN_PLUS_3_5_MODEL
 from raganything import RAGAnything, RAGAnythingConfig
-from llm import llm_model_func, vision_model_func, embedding_func
+from llm import get_llm_model_func, vision_model_func, embedding_func
 from llm.qwen_llm import qwen_rerank_model_func
+from agent.qa_agent import run_qa_agent
+
+# Eval 阶段：使用 QWEN_PLUS_3_5_MODEL 且开启 thinking（RAG 生成 + 打分均使用）
+llm_model_func_eval = get_llm_model_func(
+    model=QWEN_PLUS_3_5_MODEL,
+    enable_thinking=True,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -93,6 +101,7 @@ class EvalConfig:
     query_mode: str = "hybrid"  # LightRAG mode: "local" / "global" / "hybrid" / "mix" 等
     limit: Optional[int] = None
     docid_filter: Optional[List[str]] = None
+    use_agent: bool = False  # When True, use Q&A Agent pipeline instead of rag.aquery
 
 
 def build_doc_ragstore_mapping(
@@ -140,6 +149,40 @@ def build_doc_ragstore_mapping(
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("Failed to write doc_ragstore.json to %s: %s", output_path, e)
+
+    return mapping
+
+
+def build_doc_meta_mapping(
+    source_root: Path,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Scan runtime/source/*/meta.json and build a mapping from doc_id (file_name)
+    to the full doc_meta dict needed by the Q&A Agent tools.
+
+    Returns:
+        {"xxx.pdf": {"working_dir": "...", "parsed_dir": "...", "doc_id": "..."}, ...}
+    """
+    mapping: Dict[str, Dict[str, Any]] = {}
+    if not source_root.exists():
+        return mapping
+
+    for meta_path in source_root.glob("*/meta.json"):
+        try:
+            data = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+
+        file_name = data.get("file_name")
+        working_dir = data.get("working_dir")
+        if not file_name or not working_dir:
+            continue
+
+        mapping[str(file_name)] = {
+            "working_dir": str(working_dir),
+            "parsed_dir": str(data.get("parsed_dir") or ""),
+            "doc_id": str(data.get("doc_id") or ""),
+        }
 
     return mapping
 
@@ -264,7 +307,7 @@ async def get_rag_for_docid(
 
     rag = RAGAnything(
         config=rag_cfg,
-        llm_model_func=llm_model_func,
+        llm_model_func=llm_model_func_eval,
         vision_model_func=vision_model_func,
         embedding_func=embedding_func,
         lightrag_kwargs={
@@ -290,32 +333,64 @@ async def evaluate_single_row(
     cfg: EvalConfig,
     rag_cache: Dict[str, RAGAnything],
     doc_ragstore: Dict[str, str],
+    doc_meta_mapping: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Optional[Dict[str, Any]]:
     """对单条样本运行 RAGAnything + 评价 LLM，返回评估结果 dict。"""
     docid = str(row[cfg.docid_col])
     question = str(row[cfg.question_col])
     expected_answer = str(row[cfg.answer_col])
 
-    # 1. 加载对应 docid 的 RAGAnything（复用缓存）
-    rag = await get_rag_for_docid(docid, cfg, rag_cache, doc_ragstore)
-    if rag is None:
-        return None
+    # ---------- Agent path ----------
+    if cfg.use_agent and doc_meta_mapping:
+        doc_meta = doc_meta_mapping.get(docid)
+        if doc_meta is None:
+            logger.error("doc_meta not found for docid=%s (agent path)", docid)
+            return None
 
-    # 2. 调 RAGAnything 生成回答
-    try:
-        generated_answer = await rag.aquery(question, mode=cfg.query_mode)
-    except Exception as e:  # noqa: BLE001
-        logger.error("RAGAnything query failed for docid=%s: %s", docid, e)
-        return {
-            "docid": docid,
-            "question": question,
-            "expected_answer": expected_answer,
-            "generated_answer": "",
-            "accuracy": 0,
-            "reasoning": f"RAGAnything query failed: {e}",
-        }
+        try:
+            agent_result = await run_qa_agent(
+                question=question,
+                doc_meta=doc_meta,
+                max_retries=2,
+            )
+            generated_answer = agent_result.get("answer", "")
+            logger.info(
+                "Agent answered docid=%s q_type=%s confidence=%s attempts=%s",
+                docid,
+                agent_result.get("question_type"),
+                agent_result.get("confidence"),
+                agent_result.get("attempts"),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error("Q&A Agent failed for docid=%s: %s", docid, e)
+            return {
+                "docid": docid,
+                "question": question,
+                "expected_answer": expected_answer,
+                "generated_answer": "",
+                "accuracy": 0,
+                "reasoning": f"Q&A Agent failed: {e}",
+            }
+    else:
+        # ---------- Baseline path (rag.aquery) ----------
+        rag = await get_rag_for_docid(docid, cfg, rag_cache, doc_ragstore)
+        if rag is None:
+            return None
 
-    # 3. 构造评估 Prompt 并调用 LLM 打分（使用与 RAG 相同的 llm_model_func）
+        try:
+            generated_answer = await rag.aquery(question, mode=cfg.query_mode)
+        except Exception as e:  # noqa: BLE001
+            logger.error("RAGAnything query failed for docid=%s: %s", docid, e)
+            return {
+                "docid": docid,
+                "question": question,
+                "expected_answer": expected_answer,
+                "generated_answer": "",
+                "accuracy": 0,
+                "reasoning": f"RAGAnything query failed: {e}",
+            }
+
+    # 3. 构造评估 Prompt 并调用 LLM 打分（使用 eval 专用 llm：QWEN_PLUS_3_5 + enable_thinking）
     prompt = build_eval_prompt(
         question=question,
         expected_answer=expected_answer,
@@ -323,8 +398,7 @@ async def evaluate_single_row(
     )
 
     try:
-        # 调用评估 LLM；兼容同步函数和返回协程的函数
-        raw_eval = llm_model_func(
+        raw_eval = llm_model_func_eval(
             prompt,
             None,
             None,
@@ -408,11 +482,20 @@ async def run_eval(cfg: EvalConfig) -> None:
 
     logger.info("Loaded %d rows for evaluation", len(df))
 
+    # Build doc_meta mapping for agent path
+    doc_meta_mapping: Optional[Dict[str, Dict[str, Any]]] = None
+    if cfg.use_agent:
+        doc_meta_mapping = build_doc_meta_mapping(cfg.source_root)
+        logger.info("Agent mode enabled. doc_meta mapping has %d entries.", len(doc_meta_mapping))
+
     rag_cache: Dict[str, RAGAnything] = {}
     results: List[Dict[str, Any]] = []
 
-    for _, row in tqdm(df.iterrows(), total=len(df), desc="Evaluating"):
-        res = await evaluate_single_row(row, cfg, rag_cache, doc_ragstore)
+    eval_mode = "agent" if cfg.use_agent else "baseline"
+    for _, row in tqdm(df.iterrows(), total=len(df), desc=f"Evaluating ({eval_mode})"):
+        res = await evaluate_single_row(
+            row, cfg, rag_cache, doc_ragstore, doc_meta_mapping=doc_meta_mapping,
+        )
         if res is not None:
             results.append(res)
 
@@ -444,6 +527,7 @@ async def run_eval(cfg: EvalConfig) -> None:
         f"- **Correct**: **{correct}**\n"
         f"- **Accuracy**: **{accuracy:.4f}**\n"
         f"- **Query mode**: `{cfg.query_mode}`\n"
+        f"- **Use agent**: `{cfg.use_agent}`\n"
         f"- **Doc ID column**: `{cfg.docid_col}`\n"
         f"- **Question column**: `{cfg.question_col}`\n"
         f"- **Answer column**: `{cfg.answer_col}`\n"
@@ -507,6 +591,12 @@ def parse_args() -> EvalConfig:
         default=None,
         help="Optional limit on number of samples to evaluate.",
     )
+    parser.add_argument(
+        "--use_agent",
+        action="store_true",
+        default=False,
+        help="Use Q&A Agent pipeline (retrieval + verification + retry) instead of rag.aquery.",
+    )
 
     args = parser.parse_args()
 
@@ -523,6 +613,7 @@ def parse_args() -> EvalConfig:
         query_mode=args.query_mode,
         limit=args.limit,
         docid_filter=docid_filter,
+        use_agent=args.use_agent,
     )
 
 
