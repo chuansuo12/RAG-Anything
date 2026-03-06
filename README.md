@@ -1,4 +1,4 @@
-# RAG-Anything
+# A-PRAG
 
 基于 [LightRAG](https://github.com/HKUDS/LightRAG) 的多模态文档 RAG 框架，支持文档解析、知识图谱构建、Agentic 检索与问答。
 
@@ -212,6 +212,4 @@ uvicorn web.main:app --host 0.0.0.0 --port 8000 --reload
 
 ## 六、相关文档与引用
 
-- **第三章**：`docs/chapter3_schema_driven_kg_enhancement.md` — PRAG 领域模型与 G_v2 图谱增强。  
-- **第四章**：`docs/chapter4_flow_agentic_search_review.md` — A-PRAG Flow-Agentic 检索与 Search-Review 设计。  
 - 论文与仓库： [arXiv:2510.12323](https://arxiv.org/abs/2510.12323)，[GitHub: HKUDS/RAG-Anything](https://github.com/HKUDS/RAG-Anything)。
