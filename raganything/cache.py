@@ -70,6 +70,7 @@ class RAGInstanceCache:
             embedding_func=embedding_func,
             lightrag_kwargs={
                 "rerank_model_func": qwen_rerank_model_func,
+                "enable_llm_cache": False,
             },
         )
 

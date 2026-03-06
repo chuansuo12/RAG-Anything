@@ -97,6 +97,7 @@ async def build_rag_index_for_pdf(
         embedding_func=embedding_func,
         lightrag_kwargs={
             "rerank_model_func": qwen_rerank_model_func,
+            "enable_llm_cache": False,
         },
     )
 

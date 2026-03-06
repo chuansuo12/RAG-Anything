@@ -20,6 +20,13 @@ RAGAnything Eval Script
     --dataset_path runtime/eval/train-00000-of-00001.parquet \
     --source_root runtime/source \
     --limit 100
+
+  使用 v2 知识库评测（需先对 source 下文档运行 scripts/generate_v2_storage.py 生成 rag_storage_v2）：
+  python eval/raganything_eval.py \
+    --dataset_path runtime/eval/train-00000-of-00001.parquet \
+    --source_root runtime/source \
+    --use_v2 \
+    --limit 100
 """
 
 import argparse
@@ -42,6 +49,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from config.model_conf import QWEN_PLUS_3_5_MODEL
 from raganything import RAGAnything, RAGAnythingConfig
+from raganything.product.resolve import resolve_working_dir_v2
 from llm import get_llm_model_func, vision_model_func, embedding_func
 from llm.qwen_llm import qwen_rerank_model_func
 from agent.qa_agent import run_qa_agent
@@ -49,7 +57,7 @@ from agent.qa_agent import run_qa_agent
 # Eval 阶段：使用 QWEN_PLUS_3_5_MODEL 且开启 thinking（RAG 生成 + 打分均使用）
 llm_model_func_eval = get_llm_model_func(
     model=QWEN_PLUS_3_5_MODEL,
-    enable_thinking=True,
+    enable_thinking=False,
 )
 
 
@@ -102,16 +110,21 @@ class EvalConfig:
     limit: Optional[int] = None
     docid_filter: Optional[List[str]] = None
     use_agent: bool = False  # When True, use Q&A Agent pipeline instead of rag.aquery
+    use_v2: bool = False  # When True, use v2 knowledge base (rag_storage_v2) for evaluation
 
 
 def build_doc_ragstore_mapping(
     source_root: Path,
     output_path: Path = DOC_RAGSTORE_PATH,
+    use_v2: bool = False,
 ) -> Dict[str, str]:
     """
     扫描 runtime/source 下所有 meta.json，构建：
         评测集 doc_id (即 meta.json 中的 file_name) -> rag_storage working_dir
     的映射，并写入 eval/doc_ragstore.json。
+
+    use_v2=True 时使用 v2 知识库（working_dir_v2 或由 working_dir 推导的 rag_storage_v2），
+    且仅当该目录存在时才加入映射。
 
     返回内存中的映射 dict，形如：
         {"xxx.pdf": "/abs/path/to/.../rag_storage", ...}
@@ -137,7 +150,20 @@ def build_doc_ragstore_mapping(
             logger.warning("meta.json missing file_name/working_dir: %s", meta_path)
             continue
 
-        mapping[str(file_name)] = str(working_dir)
+        if use_v2:
+            v2_dir = (data.get("working_dir_v2") or "").strip()
+            if not v2_dir:
+                v2_dir = resolve_working_dir_v2(str(working_dir))
+            if not Path(v2_dir).exists():
+                logger.warning(
+                    "use_v2=True but v2 dir missing for doc %s: %s",
+                    file_name,
+                    v2_dir,
+                )
+                continue
+            mapping[str(file_name)] = str(v2_dir)
+        else:
+            mapping[str(file_name)] = str(working_dir)
 
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -155,13 +181,17 @@ def build_doc_ragstore_mapping(
 
 def build_doc_meta_mapping(
     source_root: Path,
+    use_v2: bool = False,
 ) -> Dict[str, Dict[str, Any]]:
     """
     Scan runtime/source/*/meta.json and build a mapping from doc_id (file_name)
     to the full doc_meta dict needed by the Q&A Agent tools.
 
+    use_v2=True 时在 doc_meta 中设置 kb_version="v2" 与 working_dir_v2，
+    以便 Agent 工具使用 v2 知识库检索。
+
     Returns:
-        {"xxx.pdf": {"working_dir": "...", "parsed_dir": "...", "doc_id": "..."}, ...}
+        {"xxx.pdf": {"working_dir": "...", "parsed_dir": "...", "doc_id": "...", ...}, ...}
     """
     mapping: Dict[str, Dict[str, Any]] = {}
     if not source_root.exists():
@@ -178,11 +208,18 @@ def build_doc_meta_mapping(
         if not file_name or not working_dir:
             continue
 
-        mapping[str(file_name)] = {
+        entry = {
             "working_dir": str(working_dir),
             "parsed_dir": str(data.get("parsed_dir") or ""),
             "doc_id": str(data.get("doc_id") or ""),
         }
+        if use_v2:
+            v2_dir = (data.get("working_dir_v2") or "").strip()
+            if not v2_dir:
+                v2_dir = resolve_working_dir_v2(str(working_dir))
+            entry["working_dir_v2"] = v2_dir
+            entry["kb_version"] = "v2"
+        mapping[str(file_name)] = entry
 
     return mapping
 
@@ -450,8 +487,14 @@ async def run_eval(cfg: EvalConfig) -> None:
     logger.info("Eval run directory initialized at %s", run_dir)
 
     # 先构建（或刷新）doc_id -> rag_storage working_dir 的映射
-    logger.info("Building doc_id -> rag_storage mapping from %s", cfg.source_root)
-    doc_ragstore = build_doc_ragstore_mapping(cfg.source_root, DOC_RAGSTORE_PATH)
+    logger.info(
+        "Building doc_id -> rag_storage mapping from %s (use_v2=%s)",
+        cfg.source_root,
+        cfg.use_v2,
+    )
+    doc_ragstore = build_doc_ragstore_mapping(
+        cfg.source_root, DOC_RAGSTORE_PATH, use_v2=cfg.use_v2
+    )
 
     logger.info("Loading dataset from %s", cfg.dataset_path)
     df = load_eval_dataset(cfg.dataset_path)
@@ -485,7 +528,7 @@ async def run_eval(cfg: EvalConfig) -> None:
     # Build doc_meta mapping for agent path
     doc_meta_mapping: Optional[Dict[str, Dict[str, Any]]] = None
     if cfg.use_agent:
-        doc_meta_mapping = build_doc_meta_mapping(cfg.source_root)
+        doc_meta_mapping = build_doc_meta_mapping(cfg.source_root, use_v2=cfg.use_v2)
         logger.info("Agent mode enabled. doc_meta mapping has %d entries.", len(doc_meta_mapping))
 
     rag_cache: Dict[str, RAGAnything] = {}
@@ -528,6 +571,7 @@ async def run_eval(cfg: EvalConfig) -> None:
         f"- **Accuracy**: **{accuracy:.4f}**\n"
         f"- **Query mode**: `{cfg.query_mode}`\n"
         f"- **Use agent**: `{cfg.use_agent}`\n"
+        f"- **Use v2 KB**: `{cfg.use_v2}`\n"
         f"- **Doc ID column**: `{cfg.docid_col}`\n"
         f"- **Question column**: `{cfg.question_col}`\n"
         f"- **Answer column**: `{cfg.answer_col}`\n"
@@ -597,6 +641,12 @@ def parse_args() -> EvalConfig:
         default=False,
         help="Use Q&A Agent pipeline (retrieval + verification + retry) instead of rag.aquery.",
     )
+    parser.add_argument(
+        "--use_v2",
+        action="store_true",
+        default=False,
+        help="Use v2 knowledge base (rag_storage_v2) for evaluation. Requires v2 index generated (e.g. via scripts/generate_v2_storage.py).",
+    )
 
     args = parser.parse_args()
 
@@ -614,6 +664,7 @@ def parse_args() -> EvalConfig:
         limit=args.limit,
         docid_filter=docid_filter,
         use_agent=args.use_agent,
+        use_v2=args.use_v2,
     )
 
 

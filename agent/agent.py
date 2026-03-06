@@ -50,6 +50,7 @@ def _build_default_llm() -> BaseChatModel:
         api_key=api_key,
         base_url=base_url,
         temperature=0.1,
+        max_retries=3,
         extra_body={"parallel_tool_calls": True},
     )
 

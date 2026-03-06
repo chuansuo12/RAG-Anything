@@ -191,6 +191,7 @@ class RAGQueryTool(BaseTool):
                     hl_keywords=hl_keywords,
                     ll_keywords=ll_keywords,
                     top_k=top_k,
+                    kb_version=self.doc_meta.get("kb_version", "v1"),
                 ),
                 self.executor_loop,
             )
@@ -203,6 +204,7 @@ class RAGQueryTool(BaseTool):
                     hl_keywords=hl_keywords,
                     ll_keywords=ll_keywords,
                     top_k=top_k,
+                    kb_version=self.doc_meta.get("kb_version", "v1"),
                 )
             )
 
@@ -225,6 +227,7 @@ class RAGQueryTool(BaseTool):
             hl_keywords=hl_keywords,
             ll_keywords=ll_keywords,
             top_k=top_k,
+            kb_version=self.doc_meta.get("kb_version", "v1"),
         )
         stripped = _strip_query_result_for_agent(references)
         n = len(stripped.get("entities", []))
@@ -286,6 +289,7 @@ class ChunkQueryTool(BaseTool):
                     hl_keywords=hl_keywords,
                     ll_keywords=ll_keywords,
                     top_k=top_k,
+                    kb_version=self.doc_meta.get("kb_version", "v1"),
                 ),
                 self.executor_loop,
             )
@@ -298,6 +302,7 @@ class ChunkQueryTool(BaseTool):
                     hl_keywords=hl_keywords,
                     ll_keywords=ll_keywords,
                     top_k=top_k,
+                    kb_version=self.doc_meta.get("kb_version", "v1"),
                 )
             )
 
@@ -319,6 +324,7 @@ class ChunkQueryTool(BaseTool):
             hl_keywords=hl_keywords,
             ll_keywords=ll_keywords,
             top_k=top_k,
+            kb_version=self.doc_meta.get("kb_version", "v1"),
         )
         stripped = _strip_chunks_result_for_agent(data)
         n = len(stripped.get("chunks", []))

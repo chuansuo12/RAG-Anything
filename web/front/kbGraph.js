@@ -158,7 +158,7 @@ function createNetwork(nodesData, edgesData) {
       if (neighbors.length) {
         lines.push(`关联节点数：${neighbors.length}`);
         const preview = neighbors
-          .slice(0, 20)
+          .slice(0, 50)
           .map((n) => n.label || n.id)
           .join("，");
         if (preview) {
