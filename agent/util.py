@@ -7,7 +7,7 @@ Agent 包内通用工具。
 
 from __future__ import annotations
 
-from typing import Any, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 
 def _is_ai_message(msg: Any) -> bool:
@@ -63,3 +63,70 @@ def get_last_ai_message_content(
         if _is_ai_message(msg):
             return _get_message_content(msg)
     return None
+
+
+def _message_role_and_type(msg: Any) -> tuple:
+    """Return (role, type) for a single message. type is human/ai/tool/system."""
+    if isinstance(msg, dict):
+        role = msg.get("role") or msg.get("type")
+        if role in ("user", "human"):
+            return "user", "human"
+        if role in ("assistant", "ai"):
+            return "assistant", "ai"
+        if role == "tool":
+            return "tool", "tool"
+        if role == "system":
+            return "system", "system"
+        return str(role or "unknown"), str(role or "unknown")
+    # LangChain message objects
+    name = type(msg).__name__
+    if "Human" in name:
+        return "user", "human"
+    if "AI" in name:
+        return "assistant", "ai"
+    if "Tool" in name:
+        return "tool", "tool"
+    if "System" in name:
+        return "system", "system"
+    role = getattr(msg, "type", None) or getattr(msg, "role", None)
+    return str(role or "unknown"), str(role or "unknown")
+
+
+def serialize_agent_messages_to_dicts(
+    result: Union[dict, List[Any], None],
+) -> List[Dict[str, Any]]:
+    """
+    将 Agent 返回结果中的 messages 序列化为前端可用的字典列表。
+    每条为 {"role": "user"|"assistant"|"tool"|"system", "content": str, "type": str, "name": str?}。
+    """
+    if result is None:
+        return []
+    messages: List[Any]
+    if isinstance(result, dict):
+        messages = result.get("messages") or []
+    elif isinstance(result, (list, tuple)):
+        messages = list(result)
+    else:
+        return []
+    out: List[Dict[str, Any]] = []
+    for msg in messages:
+        role, msg_type = _message_role_and_type(msg)
+        content = _get_message_content(msg)
+        if content is None:
+            content = ""
+        else:
+            content = str(content).strip()
+        item: Dict[str, Any] = {
+            "role": role,
+            "content": content,
+            "type": msg_type,
+        }
+        if isinstance(msg, dict):
+            if "name" in msg and msg["name"]:
+                item["name"] = str(msg["name"])
+        else:
+            name = getattr(msg, "name", None)
+            if name is not None:
+                item["name"] = str(name)
+        out.append(item)
+    return out

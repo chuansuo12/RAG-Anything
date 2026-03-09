@@ -614,7 +614,7 @@ class ProcessorMixin:
             llm_model_func=self.llm_model_func,
             embedding_func=self.embedding_func,
             lightrag_kwargs=getattr(self, "lightrag_kwargs", {}) or {},
-            merge_threshold=float(getattr(self.config, "product_schema_merge_threshold", 0.85)),
+            merge_threshold=float(getattr(self.config, "product_schema_merge_threshold", 0.9)),
             force_rebuild_v2=force_rebuild_v2,
         )
 

@@ -19,7 +19,10 @@ from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 
 from agent.tools import CreateAndRunAgentTool, build_rag_agent_tools
-from agent.prompt import build_product_info_orchestrator_system_prompt
+from agent.prompt import (
+    build_product_info_orchestrator_system_prompt,
+    build_qa_orchestrator_system_prompt,
+)
 from raganything.product import DEFAULT_PRODUCT_INFO_SCHEMA
 
 try:
@@ -90,7 +93,7 @@ def create_product_info_orchestrator_agent(
     schema_obj = product_schema or DEFAULT_PRODUCT_INFO_SCHEMA
     schema_json = json.dumps(schema_obj, ensure_ascii=False, indent=2)
 
-    # 4. 父 Agent 的 CoT 风格 system prompt：遵循 6 步编排流程，仅负责编排子 Agent
+    # 4. 父 Agent 的 CoT 风格 system prompt：遵循 4 步编排流程，仅负责编排子 Agent
     system_prompt = build_product_info_orchestrator_system_prompt(schema_json)
 
     # 父 Agent 只暴露 meta_tool；底层 RAG 工具仅对子 Agent 可见
@@ -114,6 +117,65 @@ def create_product_info_orchestrator_agent(
             user_input = inputs.get("input", "")
             messages_state = [{"role": "user", "content": str(user_input)}]
         return inner_agent.invoke({"messages": messages_state}, config=agent_config, stream_mode=stream_mode)
+
+    async def _ainvoke(inputs: dict) -> object:
+        messages_state = inputs.get("messages")
+        if not isinstance(messages_state, list):
+            user_input = inputs.get("input", "")
+            messages_state = [{"role": "user", "content": str(user_input)}]
+        return await inner_agent.ainvoke(
+            {"messages": messages_state},
+            config=agent_config,
+            stream_mode=stream_mode,
+        )
+
+    return RunnableLambda(_invoke, afunc=_ainvoke)
+
+
+def create_rag_qa_orchestrator_agent(
+    doc_meta: dict,
+    *,
+    verbose: bool = False,
+    stream_mode: StreamMode = "values",
+) -> Runnable:
+    """
+    创建用于「问答」的编排 Agent：根据用户问题通过 create_and_run_agent 调用子 Agent
+    查询知识库，并汇总成自然语言回答。适用于 Web 端 Agent 模式问答。
+
+    Args:
+        doc_meta: 单一知识库实例的元信息（与 build_rag_agent_tools 一致）。
+        verbose: 传递给底层 Agent 的 verbose 标记。
+        stream_mode: 传递给 invoke 的 stream_mode。
+
+    Returns:
+        Runnable: 输入 {"input": str} 或 {"messages": [...]}，输出为完整 state（含 messages）。
+    """
+    shared_llm = _build_default_llm()
+    base_tools = build_rag_agent_tools(doc_meta)
+    meta_tool = CreateAndRunAgentTool(llm=shared_llm, available_tools=base_tools)
+    system_prompt = build_qa_orchestrator_system_prompt()
+    parent_tools: Iterable[BaseTool] = [meta_tool]
+
+    inner_agent = create_agent(
+        model=shared_llm,
+        tools=list(parent_tools),
+        system_prompt=system_prompt,
+    )
+
+    agent_config = {
+        "configurable": {"verbose": verbose},
+        "max_concurrency": 3,
+        "recursion_limit": 100,
+    }
+
+    def _invoke(inputs: dict) -> object:
+        messages_state = inputs.get("messages")
+        if not isinstance(messages_state, list):
+            user_input = inputs.get("input", "")
+            messages_state = [{"role": "user", "content": str(user_input)}]
+        return inner_agent.invoke(
+            {"messages": messages_state}, config=agent_config, stream_mode=stream_mode
+        )
 
     async def _ainvoke(inputs: dict) -> object:
         messages_state = inputs.get("messages")

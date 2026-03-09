@@ -12,6 +12,7 @@ import shutil
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict
+import xml.etree.ElementTree as ET
 
 from lightrag.utils import compute_mdhash_id
 
@@ -26,7 +27,7 @@ async def merge_product_info_into_v2_graph(
     llm_model_func: Callable,
     embedding_func: Callable,
     lightrag_kwargs: dict | None = None,
-    merge_threshold: float = 0.85,
+    merge_threshold: float = 0.9,
     force_rebuild_v2: bool = False,
 ) -> str | None:
     """
@@ -76,33 +77,129 @@ async def merge_product_info_into_v2_graph(
     product_desc = (product.get("description") or "").strip()
     created_at = str(int(time.time()))
 
-    async def pick_existing_entity_name(query: str) -> str | None:
+    # 从 v1 graphml 中预加载 entity_id -> description 映射，用于在合并时继承 V1 描述
+    v1_entity_desc_map: Dict[str, str] = {}
+    _v1_desc_loaded = False
+
+    def _load_v1_entity_desc_map() -> None:
+        nonlocal _v1_desc_loaded
+        if _v1_desc_loaded:
+            return
+        _v1_desc_loaded = True
+
+        graph_path = src_dir / "graph_chunk_entity_relation.graphml"
+        if not graph_path.exists():
+            return
+
+        try:
+            root = ET.parse(graph_path).getroot()
+        except Exception:
+            return
+
+        ns = {"g": "http://graphml.graphdrawing.org/xmlns"}
+
+        # 收集 key -> (for, attr_name) 映射
+        key_info: Dict[str, Dict[str, str]] = {}
+        for key in root.findall("g:key", ns):
+            key_id = key.attrib.get("id")
+            attr_name = key.attrib.get("attr.name")
+            key_for = key.attrib.get("for")
+            if key_id and attr_name and key_for:
+                key_info[key_id] = {"for": key_for, "name": attr_name}
+
+        node_key_map = {k: v["name"] for k, v in key_info.items() if v["for"] == "node"}
+
+        def _extract_node_attrs(elem) -> Dict[str, Any]:
+            attrs: Dict[str, Any] = {}
+            for data in elem.findall("g:data", ns):
+                key_id = data.attrib.get("key")
+                attr_name = node_key_map.get(key_id)
+                if not attr_name:
+                    continue
+                text = (data.text or "").strip() if data.text is not None else ""
+                attrs[attr_name] = text
+            return attrs
+
+        for node in root.findall(".//g:node", ns):
+            attrs = _extract_node_attrs(node)
+            eid = (attrs.get("entity_id") or "").strip()
+            desc = (attrs.get("description") or "").strip()
+            if eid and desc and eid not in v1_entity_desc_map:
+                v1_entity_desc_map[eid] = desc
+
+    async def pick_existing_entity(query: str) -> tuple[str | None, str]:
+        """
+        Query entity VDB by name+description; if similarity >= merge_threshold,
+        return (existing_entity_name, existing_content). Otherwise (None, "").
+        Merge 时以已有节点信息（名称、描述）为主。
+        """
         try:
             hits = await lr.entities_vdb.query(query=query, top_k=5)
         except Exception:
-            return None
+            return None, ""
         if not hits:
-            return None
+            return None, ""
         best = hits[0]
         try:
             score = float(best.get("distance"))
         except Exception:
             score = 0.0
-        if score >= merge_threshold:
-            name = (best.get("entity_name") or "").strip()
-            return name or None
-        return None
+        if score < merge_threshold:
+            return None, ""
+        name = (best.get("entity_name") or "").strip()
+        content = (best.get("content") or "").strip()
+        return (name or None, content)
+
+    async def get_existing_node_description(node_id: str) -> str:
+        """
+        若 V1 图中已存在同名实体（依据 entity_id），则优先返回其 description；
+        否则再回退到当前图存储中的节点描述。
+        """
+        if not node_id:
+            return ""
+
+        # 1) 优先从 V1 graphml 中继承描述（与前端图展示的描述严格对齐）
+        try:
+            _load_v1_entity_desc_map()
+        except Exception:
+            # 加载失败时忽略，继续走存储读取逻辑
+            pass
+
+        key = node_id.strip()
+        if key:
+            desc = v1_entity_desc_map.get(key)
+            if isinstance(desc, str) and desc.strip():
+                return desc.strip()
+
+        # 2) 回退：从当前 chunk_entity_relation_graph 存储中读取
+        try:
+            node = await lr.chunk_entity_relation_graph.get_by_id(node_id)
+        except Exception:
+            return ""
+        if isinstance(node, dict):
+            desc2 = (node.get("description") or "").strip()
+            if desc2:
+                return desc2
+        return ""
 
     product_query = f"{product_name}\n{product_desc}".strip()
-    matched_product = await pick_existing_entity_name(product_query) if product_query else None
+    matched_product, existing_product_content = await pick_existing_entity(product_query) if product_query else (None, "")
     product_node_id = matched_product or product_name
+    # 以节点信息为主：若图中已存在同名节点，则优先继承其描述（即 V1 中的描述）
+    existing_product_node_desc = await get_existing_node_description(product_node_id)
+    if existing_product_node_desc:
+        product_desc_final = existing_product_node_desc
+    else:
+        # 否则回退到向量库中的内容或本次抽取的描述
+        product_desc_final = existing_product_content or product_desc
+    product_content_final = f"{product_node_id}\n{product_desc_final or ''}".strip()
 
     await lr.chunk_entity_relation_graph.upsert_node(
         product_node_id,
         {
             "entity_id": product_node_id,
             "entity_type": "product",
-            "description": product_desc,
+            "description": product_desc_final,
             "source_id": f"product_info:{doc_id}",
             "file_path": str(file_path_ref),
             "created_at": created_at,
@@ -114,7 +211,7 @@ async def merge_product_info_into_v2_graph(
             compute_mdhash_id(product_node_id, prefix="ent-"): {
                 "entity_name": product_node_id,
                 "entity_type": "product",
-                "content": f"{product_node_id}\n{product_desc or ''}",
+                "content": product_content_final or f"{product_node_id}\n{product_desc or ''}",
                 "source_id": f"product_info:{doc_id}",
                 "file_path": str(file_path_ref),
             }
@@ -142,16 +239,23 @@ async def merge_product_info_into_v2_graph(
         base_id = raw_name or raw_id
         comp_desc = (c.get("description") or "").strip()
         query = "\n".join([raw_name, comp_desc]).strip()
-        matched = await pick_existing_entity_name(query) if query else None
-        component_node_id = matched or base_id
+        matched_comp, existing_comp_content = await pick_existing_entity(query) if query else (None, "")
+        component_node_id = matched_comp or base_id
         component_id_map[raw_id or raw_name] = component_node_id
+        # 若图中已存在同名节点（通常来自 V1），则优先继承其描述
+        existing_comp_node_desc = await get_existing_node_description(component_node_id)
+        if existing_comp_node_desc:
+            comp_desc_final = existing_comp_node_desc
+        else:
+            # 否则按“已有向量库内容 -> 当前 schema 描述 -> 名称”顺序回退
+            comp_desc_final = existing_comp_content or comp_desc or raw_name
 
         await lr.chunk_entity_relation_graph.upsert_node(
             component_node_id,
             {
                 "entity_id": component_node_id,
                 "entity_type": "product_component",
-                "description": comp_desc or raw_name,
+                "description": comp_desc_final,
                 "source_id": source_id,
                 "file_path": str(file_path_ref),
                 "created_at": created_at,
@@ -173,7 +277,7 @@ async def merge_product_info_into_v2_graph(
         entities_to_upsert[ent_id] = {
             "entity_name": component_node_id,
             "entity_type": "product_component",
-            "content": f"{component_node_id}\n{comp_desc or raw_name}",
+            "content": f"{component_node_id}\n{comp_desc_final}".strip(),
             "source_id": source_id,
             "file_path": str(file_path_ref),
         }
@@ -199,16 +303,23 @@ async def merge_product_info_into_v2_graph(
         base_id = raw_name or raw_id
         feat_desc = (f.get("description") or "").strip()
         query = "\n".join([raw_name, feat_desc]).strip()
-        matched = await pick_existing_entity_name(query) if query else None
-        feature_node_id = matched or base_id
+        matched_feat, existing_feat_content = await pick_existing_entity(query) if query else (None, "")
+        feature_node_id = matched_feat or base_id
         feature_id_map[raw_id or raw_name] = feature_node_id
+        # 若图中已存在同名节点（通常来自 V1），则优先继承其描述
+        existing_feat_node_desc = await get_existing_node_description(feature_node_id)
+        if existing_feat_node_desc:
+            feat_desc_final = existing_feat_node_desc
+        else:
+            # 否则按“已有向量库内容 -> 当前 schema 描述 -> 名称”顺序回退
+            feat_desc_final = existing_feat_content or feat_desc or raw_name
 
         await lr.chunk_entity_relation_graph.upsert_node(
             feature_node_id,
             {
                 "entity_id": feature_node_id,
                 "entity_type": "product_feature",
-                "description": feat_desc or raw_name,
+                "description": feat_desc_final,
                 "source_id": source_id,
                 "file_path": str(file_path_ref),
                 "created_at": created_at,
@@ -232,7 +343,7 @@ async def merge_product_info_into_v2_graph(
         entities_to_upsert[ent_id] = {
             "entity_name": feature_node_id,
             "entity_type": "product_feature",
-            "content": f"{feature_node_id}\n{feat_desc or raw_name}",
+            "content": f"{feature_node_id}\n{feat_desc_final}".strip(),
             "source_id": source_id,
             "file_path": str(file_path_ref),
         }

@@ -100,11 +100,12 @@
 
           <!-- Chat area -->
           <div class="flex-1 bg-slate-900/70 border border-slate-800 rounded-xl flex flex-col">
-            <div class="border-b border-slate-800 px-4 py-2 flex items-center justify-between gap-3">
-              <div>
-                <p id="current-conversation-title" class="text-sm font-semibold text-slate-100">新会话尚未创建</p>
-                <p id="current-doc-label" class="text-xs text-slate-400">请先在上方选择一个知识库，然后在下方输入你的第一个问题，系统会自动为你创建会话。</p>
+            <div class="border-b border-slate-800 px-4 py-2 flex flex-col gap-1">
+              <div class="flex items-center gap-2 min-w-0">
+                <p id="current-conversation-title" class="text-sm font-semibold text-slate-100 truncate">新会话尚未创建</p>
+                <button id="rename-current-conversation-btn" type="button" class="hidden shrink-0 p-1 rounded-md text-slate-400 hover:text-cyan-400 hover:bg-slate-800" title="重命名会话">✎</button>
               </div>
+              <p id="current-doc-label" class="text-xs text-slate-400">请先在上方选择一个知识库，然后在下方输入你的第一个问题，系统会自动为你创建会话。</p>
             </div>
 
             <div id="chat-messages" class="flex-1 overflow-y-auto px-4 py-3 space-y-3 text-sm">
@@ -112,11 +113,26 @@
             </div>
 
             <div class="border-t border-slate-800 px-4 py-3">
-              <form id="chat-form" class="flex items-end gap-3">
-                <textarea id="chat-input" rows="2" placeholder="在此输入你的问题..." class="flex-1 resize-none rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"></textarea>
-                <button type="submit" id="send-btn" class="h-9 px-4 rounded-md bg-cyan-500 text-slate-900 text-xs font-medium hover:bg-cyan-400 disabled:opacity-50 disabled:cursor-not-allowed">
-                  发送
-                </button>
+              <form id="chat-form" class="flex flex-col gap-2">
+                <div class="flex items-center gap-3 flex-wrap">
+                  <label class="inline-flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
+                    <input id="use-agent-mode" type="checkbox" class="accent-cyan-500 rounded" />
+                    <span>Agent 模式</span>
+                  </label>
+                  <div id="agent-version-wrap" class="hidden inline-flex items-center gap-2">
+                    <span class="text-[11px] text-slate-500">版本</span>
+                    <select id="agent-version" class="rounded bg-slate-950 border border-slate-700 px-2 py-1 text-[11px] text-slate-200 focus:outline-none focus:ring-1 focus:ring-cyan-500" title="v1: 编排 Agent；v2: qa_agent 检索+验证">
+                      <option value="v1">v1 编排</option>
+                      <option value="v2">v2 qa_agent</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="flex items-end gap-3">
+                  <textarea id="chat-input" rows="2" placeholder="在此输入你的问题..." class="flex-1 resize-none rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"></textarea>
+                  <button type="submit" id="send-btn" class="h-9 px-4 rounded-md bg-cyan-500 text-slate-900 text-xs font-medium hover:bg-cyan-400 disabled:opacity-50 disabled:cursor-not-allowed">
+                    发送
+                  </button>
+                </div>
               </form>
             </div>
           </div>

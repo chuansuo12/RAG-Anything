@@ -24,6 +24,7 @@ import { appState } from "./state.js";
 import { fetchJSON } from "./api.js";
 import { setStatus } from "./status.js";
 import { clearKbGraph, loadKbGraph } from "./kbGraph.js";
+import { pushRoute } from "./router.js";
 
 let productSchemaFetchToken = 0;
 
@@ -208,6 +209,7 @@ export async function loadKnowledgeBase(docId) {
     appState.currentDocId = meta.doc_id || docId;
     updateKbDetail(meta);
     await loadDocs();
+    pushRoute("kb", appState.currentDocId, appState.kbVersion);
     setStatus("就绪");
   } catch (e) {
     console.error(e);
@@ -322,6 +324,7 @@ export async function deleteCurrentKnowledgeBase() {
     }
     if (appState.currentDocId === docId) {
       appState.currentDocId = "";
+      pushRoute("kb", null, appState.kbVersion);
     }
     await loadDocs();
 

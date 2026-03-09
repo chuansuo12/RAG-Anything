@@ -31,6 +31,8 @@ export function clearKbGraph() {
   }
   appState.kbGraphRawNodes = [];
   appState.kbGraphRawEdges = [];
+  appState.kbGraphTotalNodes = 0;
+  appState.kbGraphTotalEdges = 0;
 }
 
 function showKbGraphMessage(msg) {
@@ -78,16 +80,30 @@ function createNetwork(nodesData, edgesData) {
     })),
   );
 
+  const nodeCount = nodesData.length;
+  const edgeCount = edgesData.length;
+  const isLargeGraph = nodeCount > 150 || edgeCount > 300;
+
   const options = {
     autoResize: true,
     height: "100%",
     width: "100%",
+    layout: {
+      improvedLayout: false,
+    },
     physics: {
-      stabilization: true,
+      stabilization: {
+        enabled: true,
+        iterations: isLargeGraph ? 120 : 200,
+        updateInterval: 25,
+      },
       barnesHut: {
         gravitationalConstant: -2000,
         springLength: 120,
+        springConstant: 0.04,
         damping: 0.3,
+        maxVelocity: isLargeGraph ? 100 : 50,
+        avoidOverlap: 0,
       },
     },
     nodes: {
@@ -107,7 +123,7 @@ function createNetwork(nodesData, edgesData) {
     edges: {
       color: { color: "#64748b", highlight: "#f97316" },
       width: 1,
-      smooth: true,
+      smooth: isLargeGraph ? false : { type: "continuous", roundness: 0.5 },
     },
     interaction: {
       hover: true,
@@ -186,6 +202,12 @@ function createNetwork(nodesData, edgesData) {
       kbGraphNodeDetailEl.classList.add("hidden");
     }
   });
+
+  if (isLargeGraph) {
+    appState.kbGraphNetwork.once("stabilizationIterationsDone", () => {
+      appState.kbGraphNetwork.setOptions({ physics: false });
+    });
+  }
 }
 
 async function applyKbGraphFilter() {
@@ -220,15 +242,19 @@ async function applyKbGraphFilter() {
     const total = typeof data.total_nodes === "number"
       ? data.total_nodes
       : (Array.isArray(data.nodes) ? data.nodes.length : 0);
+    const totalEdges = typeof data.total_edges === "number"
+      ? data.total_edges
+      : (Array.isArray(data.edges) ? data.edges.length : 0);
     const shown = Array.isArray(data.nodes) ? data.nodes.length : 0;
+    const shownEdges = Array.isArray(data.edges) ? data.edges.length : 0;
 
     if (kbGraphSearchResultEl) {
       if (!shown) {
         kbGraphSearchResultEl.textContent = "未找到匹配的节点，请尝试其他关键词。";
       } else if (total > shown) {
-        kbGraphSearchResultEl.textContent = `全图共 ${total} 个节点，本次搜索展示 ${shown} 个（命中节点及其一阶邻居）。`;
+        kbGraphSearchResultEl.textContent = `全图共 ${total} 个节点、${totalEdges} 条关系，本次搜索展示 ${shown} 个节点、${shownEdges} 条关系（命中节点及其一阶邻居）。`;
       } else {
-        kbGraphSearchResultEl.textContent = `共 ${shown} 个节点（命中节点及其一阶邻居）。`;
+        kbGraphSearchResultEl.textContent = `共 ${shown} 个节点、${shownEdges} 条关系（命中节点及其一阶邻居）。`;
       }
     }
   } catch (e) {
@@ -276,16 +302,21 @@ export function renderKbGraph(graphData) {
   appState.kbGraphTotalNodes = Number.isFinite(graphData?.total_nodes)
     ? graphData.total_nodes
     : nodesData.length;
+  appState.kbGraphTotalEdges = Number.isFinite(graphData?.total_edges)
+    ? graphData.total_edges
+    : edgesData.length;
 
   if (kbGraphSearchResultEl) {
     const total = appState.kbGraphTotalNodes;
+    const totalEdges = appState.kbGraphTotalEdges;
     const shown = nodesData.length;
+    const shownEdges = edgesData.length;
     if (!shown) {
       kbGraphSearchResultEl.textContent = "当前没有可展示的节点";
     } else if (total > shown) {
-      kbGraphSearchResultEl.textContent = `全图共 ${total} 个节点，当前展示最近的 ${shown} 个节点。`;
+      kbGraphSearchResultEl.textContent = `全图共 ${total} 个节点、${totalEdges} 条关系，当前展示最近的 ${shown} 个节点（${shownEdges} 条关系）。`;
     } else {
-      kbGraphSearchResultEl.textContent = `共 ${shown} 个节点。`;
+      kbGraphSearchResultEl.textContent = `共 ${shown} 个节点、${shownEdges} 条关系。`;
     }
   }
 

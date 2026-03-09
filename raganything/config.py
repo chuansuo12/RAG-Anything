@@ -131,9 +131,9 @@ class RAGAnythingConfig:
     """Max characters of chunk text to feed into schema extraction."""
 
     product_schema_merge_threshold: float = field(
-        default=get_env_value("PRODUCT_SCHEMA_MERGE_THRESHOLD", 0.85, float)
+        default=get_env_value("PRODUCT_SCHEMA_MERGE_THRESHOLD", 0.9, float)
     )
-    """Cosine similarity threshold for semantic merging schema nodes into graph."""
+    """Cosine similarity threshold for semantic merging schema nodes into graph (>= 0.9 to merge)."""
 
     def __post_init__(self):
         """Post-initialization setup for backward compatibility"""

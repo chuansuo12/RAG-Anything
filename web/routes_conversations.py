@@ -5,8 +5,8 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, HTTPException
 
-from .rag_service import answer_question
-from .schemas import ConversationCreate, MessageCreate
+from .rag_service import answer_question, answer_question_agent, answer_question_agent_v2
+from .schemas import ConversationCreate, ConversationUpdate, MessageCreate
 from .settings import HISTORY_DIR
 from .storage import _conversation_path, _doc_meta_path, _read_json, _write_json
 from .utils import _now_iso
@@ -42,6 +42,26 @@ async def get_conversation(conversation_id: str) -> Dict[str, Any]:
     conv = _read_json(_conversation_path(conversation_id), default=None)
     if not isinstance(conv, dict):
         raise HTTPException(status_code=404, detail="Conversation not found")
+    return conv
+
+
+@router.patch("/{conversation_id}")
+async def update_conversation(
+    conversation_id: str,
+    payload: ConversationUpdate,
+) -> Dict[str, Any]:
+    """
+    更新会话信息（如标题）。仅更新 payload 中提供的字段。
+    """
+    conv_path = _conversation_path(conversation_id)
+    conv = _read_json(conv_path, default=None)
+    if not isinstance(conv, dict):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    if payload.title is not None:
+        conv["title"] = (payload.title or "").strip() or conv.get("title")
+    conv["updated_at"] = _now_iso()
+    _write_json(conv_path, conv)
     return conv
 
 
@@ -108,25 +128,49 @@ async def send_message(
     if not isinstance(doc_meta, dict) or doc_meta.get("status") != "ready":
         raise HTTPException(status_code=400, detail="关联的知识库不存在或尚未解析完成")
 
-    answer, references = await answer_question(
-        doc_meta, question, kb_version=(payload.kb_version or "v1")
-    )
+    use_agent = getattr(payload, "use_agent", False) or False
+    agent_ver = getattr(payload, "agent_version", None) or "v1"
+    kb_ver = payload.kb_version or "v1"
+    agent_messages: List[Dict[str, Any]] = []
 
-    user_msg: Dict[str, Any] = {"role": "user", "content": question}
+    if use_agent:
+        if (agent_ver or "v1").lower() == "v2":
+            answer, references, agent_messages = await answer_question_agent_v2(
+                doc_meta, question, kb_version=kb_ver
+            )
+        else:
+            answer, references, agent_messages = await answer_question_agent(
+                doc_meta, question, kb_version=kb_ver
+            )
+    else:
+        answer, references = await answer_question(doc_meta, question, kb_version=kb_ver)
+
+    user_msg: Dict[str, Any] = {
+        "role": "user",
+        "content": question,
+        "kb_version": kb_ver,
+        "agent_version": agent_ver,
+        "use_agent": use_agent,
+    }
     assistant_msg: Dict[str, Any] = {
         "role": "assistant",
         "content": answer,
         "references": references,
     }
+    if agent_messages:
+        assistant_msg["agent_messages"] = agent_messages
     conv.setdefault("messages", [])
     conv["messages"].append(user_msg)
     conv["messages"].append(assistant_msg)
     conv["updated_at"] = _now_iso()
     _write_json(conv_path, conv)
 
-    return {
+    out: Dict[str, Any] = {
         "answer": answer,
         "conversation_id": conversation_id,
         "references": assistant_msg["references"],
     }
+    if agent_messages:
+        out["agent_messages"] = agent_messages
+    return out
 

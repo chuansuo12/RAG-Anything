@@ -10,6 +10,13 @@ from raganything import RAGAnything, RAGAnythingConfig
 from raganything.parser import MineruParser
 from raganything.cache import default_rag_cache
 
+from agent import (
+    create_rag_qa_orchestrator_agent,
+    get_last_ai_message_content,
+    run_qa_agent,
+    serialize_agent_messages_to_dicts,
+)
+
 from llm import embedding_func, llm_model_func, vision_model_func
 from llm.qwen_llm import qwen_rerank_model_func
 
@@ -238,6 +245,110 @@ async def answer_question(
     return answer, enriched
 
 
+async def answer_question_agent(
+    doc_meta: Dict[str, Any], question: str, kb_version: str = "v1"
+) -> Tuple[str, List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    使用 Agent 模式进行问答：通过 Q&A 编排 Agent 调用子 Agent 查询知识库并汇总回答。
+    返回最终答案、引用列表（Agent 模式下通常为空）以及各阶段 Message 列表供前端展示。
+
+    Returns:
+        tuple: (answer_text, references, agent_messages)
+            agent_messages: 每个阶段的消息，每项含 role, content, type, name?
+    """
+    working_dir = _resolve_working_dir_for_version(doc_meta, kb_version)
+    if not working_dir:
+        raise RuntimeError("知识库工作目录缺失")
+    if (kb_version or "v1").lower() == "v2":
+        if not Path(working_dir).exists():
+            raise RuntimeError("请求使用 v2 知识库，但 v2 索引尚未生成")
+
+    agent_doc_meta = {**doc_meta, "working_dir": working_dir}
+    orchestrator = create_rag_qa_orchestrator_agent(
+        doc_meta=agent_doc_meta,
+        verbose=False,
+        stream_mode="values",
+    )
+    try:
+        result = await orchestrator.ainvoke({"input": question})
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Agent 回答失败: {e}")
+
+    answer = get_last_ai_message_content(result) or ""
+    agent_messages = serialize_agent_messages_to_dicts(result)
+    return answer, [], agent_messages
+
+
+def _build_qa_agent_messages(qa_result: Dict[str, Any], question: str) -> List[Dict[str, Any]]:
+    """
+    根据 run_qa_agent 的返回结果构造前端展示用的 agent_messages（各阶段 Message）。
+    """
+    messages: List[Dict[str, Any]] = []
+    q_type = qa_result.get("question_type") or ""
+    verification = qa_result.get("verification") or {}
+    attempts = qa_result.get("attempts", 0)
+    confidence = qa_result.get("confidence") or ""
+
+    messages.append({
+        "role": "assistant",
+        "type": "stage",
+        "content": f"问题分类: {q_type}",
+        "name": "classify",
+    })
+    messages.append({
+        "role": "assistant",
+        "type": "stage",
+        "content": f"检索与验证 (轮数: {attempts}, 置信度: {confidence})",
+        "name": "retrieval_verify",
+    })
+    feedback = verification.get("feedback") or ""
+    if feedback:
+        messages.append({
+            "role": "assistant",
+            "type": "stage",
+            "content": f"验证反馈: {feedback[:500]}{'…' if len(feedback) > 500 else ''}",
+            "name": "verification_feedback",
+        })
+    final = qa_result.get("answer") or ""
+    if final:
+        messages.append({
+            "role": "assistant",
+            "type": "ai",
+            "content": final,
+            "name": "final_answer",
+        })
+    return messages
+
+
+async def answer_question_agent_v2(
+    doc_meta: Dict[str, Any], question: str, kb_version: str = "v1"
+) -> Tuple[str, List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    使用 qa_agent（检索 + 验证 + 重试）进行问答，返回答案与各阶段 Message 供前端展示。
+    """
+    working_dir = _resolve_working_dir_for_version(doc_meta, kb_version)
+    if not working_dir:
+        raise RuntimeError("知识库工作目录缺失")
+    if (kb_version or "v1").lower() == "v2":
+        if not Path(working_dir).exists():
+            raise RuntimeError("请求使用 v2 知识库，但 v2 索引尚未生成")
+
+    agent_doc_meta = {**doc_meta, "working_dir": working_dir}
+    try:
+        qa_result = await run_qa_agent(
+            question,
+            agent_doc_meta,
+            max_retries=2,
+            verbose=False,
+        )
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Agent v2 回答失败: {e}")
+
+    answer = qa_result.get("answer") or ""
+    agent_messages = _build_qa_agent_messages(qa_result, question)
+    return answer, [], agent_messages
+
+
 async def query_data_only(
     doc_meta: Dict[str, Any],
     hl_keywords: List[str] | None = None,
@@ -449,16 +560,20 @@ def get_doc_graph(
             }
         )
 
-    # 如果带查询，按名称搜索并可选扩展到一阶邻居
-    q = (query or "").strip().lower()
+    total_edges = len(edges)
+
+    # 如果带查询，按节点名称精准匹配并可选扩展到一阶邻居
+    q = (query or "").strip()
     if q:
+        q_lower = q.lower()
         matched_ids = {
             n["id"]
             for n in nodes
-            if q in str(n.get("label") or "").lower() or q in str(n["id"]).lower()
+            if (str(n.get("label") or "").strip().lower() == q_lower)
+            or (str(n["id"] or "").strip().lower() == q_lower)
         }
         if not matched_ids:
-            return {"nodes": [], "edges": [], "total_nodes": total_nodes}
+            return {"nodes": [], "edges": [], "total_nodes": total_nodes, "total_edges": total_edges}
 
         allowed_ids = set(matched_ids)
         if with_neighbors:
@@ -494,7 +609,7 @@ def get_doc_graph(
                 if e.get("source") in allowed_ids and e.get("target") in allowed_ids
             ]
 
-    return {"nodes": nodes, "edges": edges, "total_nodes": total_nodes}
+    return {"nodes": nodes, "edges": edges, "total_nodes": total_nodes, "total_edges": total_edges}
 
 
 def get_doc_graph_node_detail(doc_meta: Dict[str, Any], node_id: str) -> Dict[str, Any]:

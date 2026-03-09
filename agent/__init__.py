@@ -12,15 +12,23 @@ This package provides:
 - `get_last_ai_message_content`: 从 Agent 返回的 messages 中取出最后一次 AI 消息的 content。
 """
 
-from .agent import create_product_info_orchestrator_agent
+from .agent import (
+    create_product_info_orchestrator_agent,
+    create_rag_qa_orchestrator_agent,
+)
 from .tools import build_rag_agent_tools
 from .qa_agent import run_qa_agent
-from .util import get_last_ai_message_content
+from .util import (
+    get_last_ai_message_content,
+    serialize_agent_messages_to_dicts,
+)
 
 __all__ = [
     "create_product_info_orchestrator_agent",
+    "create_rag_qa_orchestrator_agent",
     "build_rag_agent_tools",
     "run_qa_agent",
     "get_last_ai_message_content",
+    "serialize_agent_messages_to_dicts",
 ]
 

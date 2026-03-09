@@ -26,12 +26,8 @@ import xml.etree.ElementTree as ET
 from pydantic import BaseModel, Field
 from lightrag.utils import always_get_an_event_loop
 
-from web.rag_service import (
-    answer_question,
-    load_content_list_read_only,
-    query_data_only,
-    get_doc_graph_node_detail,
-)
+# Lazy import web.rag_service inside tool methods to avoid circular import:
+# web.rag_service -> agent -> agent.tools -> web.rag_service
 from raganything.utils import encode_image_to_base64, validate_image_file
 from raganything.product.resolve import resolve_working_dir_v2
 from llm import vision_model_func
@@ -179,6 +175,8 @@ class RAGQueryTool(BaseTool):
             pass
 
         # 归一化空值，便于后续传递
+        from web.rag_service import query_data_only
+
         hl_keywords = hl_keywords or []
         ll_keywords = ll_keywords or []
 
@@ -220,6 +218,8 @@ class RAGQueryTool(BaseTool):
         ll_keywords: List[str] | None = None,
         top_k: int = 10,
     ) -> str:
+        from web.rag_service import query_data_only
+
         hl_keywords = hl_keywords or []
         ll_keywords = ll_keywords or []
         references = await query_data_only(
@@ -277,6 +277,8 @@ class ChunkQueryTool(BaseTool):
         except Exception:
             pass
 
+        from web.rag_service import query_data_only
+
         hl_keywords = hl_keywords or []
         ll_keywords = ll_keywords or []
 
@@ -317,6 +319,8 @@ class ChunkQueryTool(BaseTool):
         ll_keywords: List[str] | None = None,
         top_k: int = 10,
     ) -> str:
+        from web.rag_service import query_data_only
+
         hl_keywords = hl_keywords or []
         ll_keywords = ll_keywords or []
         data = await query_data_only(
@@ -357,6 +361,8 @@ class EntityNeighborsTool(BaseTool):
     args_schema: type[BaseModel] = _EntityNeighborsInput
 
     def _run(self, node_id: str) -> str:
+        from web.rag_service import get_doc_graph_node_detail
+
         try:
             detail = get_doc_graph_node_detail(self.doc_meta, node_id=node_id)
         except Exception as e:  # noqa: BLE001
@@ -516,6 +522,8 @@ class PageContextTool(BaseTool):
     args_schema: type[BaseModel] = _PageContextInput
 
     def _load_content_list(self) -> List[Dict[str, Any]]:
+        from web.rag_service import load_content_list_read_only
+
         content_list, _ = load_content_list_read_only(self.parsed_dir)
         return content_list
 
@@ -845,6 +853,15 @@ class _CreateRunAgentInput(BaseModel):
             "'answer questions by combining images and documents', etc."
         )
     )
+    max_tool_calls: int = Field(
+        default=5,
+        ge=1,
+        le=5,
+        description=(
+            "Maximum number of tool calls the new Agent is allowed to make. "
+            "Must be between 1 and 5. Default is 5."
+        )
+    )
 
 
 class CreateAndRunAgentTool(BaseTool):
@@ -880,14 +897,25 @@ class CreateAndRunAgentTool(BaseTool):
                 selected.append(t)
         return selected
 
-    def _run(self, system_prompt: str, tool_names: List[str], task: str) -> str:
+    _MAX_TOOL_CALLS_CAP: int = 5
+
+    def _run(
+        self,
+        system_prompt: str,
+        tool_names: List[str],
+        task: str,
+        max_tool_calls: int = 5,
+    ) -> str:
+        max_tool_calls = max(1, min(max_tool_calls, self._MAX_TOOL_CALLS_CAP))
+
         started = time.perf_counter()
         sp_preview = (system_prompt or "")[:160].replace("\n", "\\n")
         task_preview = (task or "")[:200].replace("\n", "\\n")
 
         logger.info(
-            "CreateAndRunAgentTool start: requested_tools=%s task_preview=%r system_prompt_preview=%r",
+            "CreateAndRunAgentTool start: requested_tools=%s max_tool_calls=%d task_preview=%r system_prompt_preview=%r",
             tool_names,
+            max_tool_calls,
             task_preview,
             sp_preview,
         )
@@ -899,24 +927,29 @@ class CreateAndRunAgentTool(BaseTool):
                 f"Requested tools: {tool_names}"
             )
 
-        # 使用新版 LangChain Agents API：
-        # https://docs.langchain.com/oss/python/langchain/agents
-        # 通过 create_agent 注册模型和工具，并用 system_prompt 指定角色。
+        augmented_prompt = (
+            f"{system_prompt}\n\n"
+            f"IMPORTANT: You have a strict budget of **{max_tool_calls}** tool calls. "
+            f"Plan carefully and do NOT exceed this limit."
+        )
+
         inner_agent = create_agent(
             model=self.llm,
             tools=tools,
-            system_prompt=system_prompt,
+            system_prompt=augmented_prompt,
         )
 
-        # create_agent 期望以 messages state 作为输入；
-        # 由于已在创建时注入 system_prompt，这里只需提供用户消息。
         messages_state: List[Dict[str, Any]] = [
             {"role": "user", "content": task},
         ]
 
+        # Each tool call costs ~2 recursion steps (LLM turn + tool turn),
+        # plus 1 for the initial call and 1 for the final answer.
+        recursion_limit = max_tool_calls * 2 + 2
+
         result = inner_agent.invoke(
             {"messages": messages_state},
-            config={"max_concurrency": 3},
+            config={"max_concurrency": 3, "recursion_limit": recursion_limit},
         )
 
         # 从 LangGraph 风格 state 中抽取最终文本
@@ -940,14 +973,18 @@ class CreateAndRunAgentTool(BaseTool):
         return output
 
     async def _arun(
-        self, system_prompt: str, tool_names: List[str], task: str
+        self,
+        system_prompt: str,
+        tool_names: List[str],
+        task: str,
+        max_tool_calls: int = 5,
     ) -> str:
-        # 使用线程池在异步环境中安全地运行同步 AgentExecutor
         return await asyncio.to_thread(
             self._run,
             system_prompt,
             tool_names,
             task,
+            max_tool_calls,
         )
 
 

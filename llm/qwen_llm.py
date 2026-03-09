@@ -269,28 +269,26 @@ async def qwen_rerank_model_func(
     resp.raise_for_status()
     data = resp.json()
 
-    # 根据百炼 qwen3-rerank 返回格式提取分数
-    # 典型结构：
-    # {
-    #   "output": {
-    #     "results": [
-    #       {"index": 0, "relevance_score": 0.98, ...},
-    #       {"index": 2, "relevance_score": 0.80, ...},
-    #       ...
-    #     ]
-    #   },
-    #   "usage": {...},
-    #   "request_id": "..."
-    # }
-    items = data.get("output", {}).get("results", [])
+    # 兼容两种返回格式（同一 compatible-api 可能返回不同结构）：
+    # - 官方文档格式: { "output": { "results": [ { "index", "relevance_score", "document" } ] } }
+    # - 兼容接口格式: { "results": [ ... ], "object", "model", "id", "usage" }
+    items = data.get("results") or data.get("output", {}).get("results", [])
+    logger.info(
+        "qwen_rerank_model_func: parsed %d results (from top-level=%s)",
+        len(items),
+        "results" in data,
+    )
+
+    # 每条：index + relevance_score / score
     score_by_index: dict[int, float] = {}
     for i, item in enumerate(items):
         try:
             idx = int(item.get("index", i))
         except Exception:  # noqa: BLE001
             idx = i
+        raw_score = item.get("relevance_score", item.get("score", None))
         try:
-            score = float(item.get("relevance_score", 0.0))
+            score = float(raw_score) if raw_score is not None else 0.0
         except Exception:  # noqa: BLE001
             score = 0.0
         score_by_index[idx] = score

@@ -10,7 +10,13 @@ class ConversationCreate(BaseModel):
     title: Optional[str] = None
 
 
+class ConversationUpdate(BaseModel):
+    title: Optional[str] = None
+
+
 class MessageCreate(BaseModel):
     question: str
     kb_version: Optional[str] = "v1"
+    use_agent: Optional[bool] = False
+    agent_version: Optional[str] = "v1"  # "v1"=编排 Agent, "v2"=qa_agent(检索+验证)
 
