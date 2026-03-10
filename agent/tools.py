@@ -769,6 +769,68 @@ class ProductInfoTool(BaseTool):
         return await asyncio.to_thread(self._run, filter_type, filter_name)
 
 
+class _WriteJsonFileInput(BaseModel):
+    file_path: str = Field(
+        description=(
+            "Absolute path of the JSON file to write. "
+            "The parent directories will be created automatically."
+        )
+    )
+    content: Dict[str, Any] = Field(
+        description="The JSON object to write to the file."
+    )
+
+
+class WriteJsonFileTool(BaseTool):
+    """Write a JSON object to a file on disk.
+
+    Designed for the ProductInfoPipeline: each sub-agent writes its
+    extraction result to a designated file. The pipeline later reads
+    and merges all files.
+
+    A configurable ``allowed_directory`` restricts writes to a single
+    directory tree for safety.
+    """
+
+    name: str = "write_json_file"
+    description: str = (
+        "Write a JSON object to the specified file path. "
+        "Parent directories are created automatically. "
+        "Use this tool to persist your extraction result."
+    )
+
+    allowed_directory: str = Field(
+        description="Root directory that this tool is allowed to write into."
+    )
+
+    args_schema: type[BaseModel] = _WriteJsonFileInput
+
+    def _run(self, file_path: str, content: Dict[str, Any]) -> str:
+        from pathlib import Path as _P
+
+        target = _P(file_path).resolve()
+        allowed = _P(self.allowed_directory).resolve()
+        if not str(target).startswith(str(allowed)):
+            return (
+                f"REJECTED: path '{file_path}' is outside the allowed "
+                f"directory '{self.allowed_directory}'."
+            )
+
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(
+                json.dumps(content, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return f"ERROR writing file: {exc}"
+
+        return f"OK: wrote to {target}"
+
+    async def _arun(self, file_path: str, content: Dict[str, Any]) -> str:
+        return await asyncio.to_thread(self._run, file_path, content)
+
+
 def build_rag_agent_tools(
     doc_meta: Dict[str, Any],
     *,
@@ -794,25 +856,16 @@ def build_rag_agent_tools(
     """
     tools: List[BaseTool] = []
 
-    # 尽可能捕获当前运行中的事件循环，用于同步工具调用时转发协程执行
     try:
         executor_loop = asyncio.get_running_loop()
     except RuntimeError:
         executor_loop = None
 
-    # 实体查询工具：仅返回 entities
     tools.append(RAGQueryTool(doc_meta=dict(doc_meta), executor_loop=executor_loop))
-
-    # chunk 查询工具：仅返回 chunks
     tools.append(ChunkQueryTool(doc_meta=dict(doc_meta), executor_loop=executor_loop))
-
-    # 实体邻居查询工具：基于图数据返回某节点的一阶邻居
     tools.append(EntityNeighborsTool(doc_meta=dict(doc_meta)))
-
-    # 按 chunk_id 列表查询 chunk 描述
     tools.append(ChunkByIdTool(doc_meta=dict(doc_meta)))
 
-    # 上下文路由工具：基于 MinerU content_list 按页返回上下文
     if include_page_context_tool:
         parsed_dir_raw: Optional[str] = (
             doc_meta.get("parsed_dir") if isinstance(doc_meta, dict) else None
@@ -822,11 +875,9 @@ def build_rag_agent_tools(
             if parsed_dir.exists():
                 tools.append(PageContextTool(parsed_dir=parsed_dir))
 
-    # VLM 图像工具：与具体 doc 无关，只依赖全局配置好的 vision_model_func
     if include_vlm_image_tool:
         tools.append(ImageVLMTool())
 
-    # Product Info 工具：读取 v2 working dir 下的 product info.json
     if include_product_info_tool:
         tools.append(ProductInfoTool(doc_meta=dict(doc_meta)))
 
@@ -851,15 +902,6 @@ class _CreateRunAgentInput(BaseModel):
             "Task or problem for the new Agent to solve, e.g. "
             "'read the knowledge base and provide a summary', "
             "'answer questions by combining images and documents', etc."
-        )
-    )
-    max_tool_calls: int = Field(
-        default=5,
-        ge=1,
-        le=5,
-        description=(
-            "Maximum number of tool calls the new Agent is allowed to make. "
-            "Must be between 1 and 5. Default is 5."
         )
     )
 
@@ -897,25 +939,19 @@ class CreateAndRunAgentTool(BaseTool):
                 selected.append(t)
         return selected
 
-    _MAX_TOOL_CALLS_CAP: int = 5
-
     def _run(
         self,
         system_prompt: str,
         tool_names: List[str],
         task: str,
-        max_tool_calls: int = 5,
     ) -> str:
-        max_tool_calls = max(1, min(max_tool_calls, self._MAX_TOOL_CALLS_CAP))
-
         started = time.perf_counter()
         sp_preview = (system_prompt or "")[:160].replace("\n", "\\n")
         task_preview = (task or "")[:200].replace("\n", "\\n")
 
         logger.info(
-            "CreateAndRunAgentTool start: requested_tools=%s max_tool_calls=%d task_preview=%r system_prompt_preview=%r",
+            "CreateAndRunAgentTool start: requested_tools=%s task_preview=%r system_prompt_preview=%r",
             tool_names,
-            max_tool_calls,
             task_preview,
             sp_preview,
         )
@@ -927,11 +963,7 @@ class CreateAndRunAgentTool(BaseTool):
                 f"Requested tools: {tool_names}"
             )
 
-        augmented_prompt = (
-            f"{system_prompt}\n\n"
-            f"IMPORTANT: You have a strict budget of **{max_tool_calls}** tool calls. "
-            f"Plan carefully and do NOT exceed this limit."
-        )
+        augmented_prompt = system_prompt
 
         inner_agent = create_agent(
             model=self.llm,
@@ -943,9 +975,10 @@ class CreateAndRunAgentTool(BaseTool):
             {"role": "user", "content": task},
         ]
 
-        # Each tool call costs ~2 recursion steps (LLM turn + tool turn),
-        # plus 1 for the initial call and 1 for the final answer.
-        recursion_limit = max_tool_calls * 2 + 2
+        # Set a fixed upper bound for the internal agent recursion to avoid
+        # unbounded tool-calling loops. This is independent of any user-facing
+        # notion of "tool call budget".
+        recursion_limit = 80
 
         result = inner_agent.invoke(
             {"messages": messages_state},
@@ -977,14 +1010,12 @@ class CreateAndRunAgentTool(BaseTool):
         system_prompt: str,
         tool_names: List[str],
         task: str,
-        max_tool_calls: int = 5,
     ) -> str:
         return await asyncio.to_thread(
             self._run,
             system_prompt,
             tool_names,
             task,
-            max_tool_calls,
         )
 
 

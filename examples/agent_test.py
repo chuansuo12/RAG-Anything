@@ -25,13 +25,9 @@ import json
 import os
 from pathlib import Path
 
-from agent import (
-    build_rag_agent_tools,
-    create_product_info_orchestrator_agent,
-    get_last_agent_output,
-)
+from agent import ProductInfoPipeline
+from agent.agent import _build_default_llm
 from raganything.product import DEFAULT_PRODUCT_INFO_SCHEMA
-from config.api_keys import DASHSCOPE_API_KEY
 
 
 def _build_doc_meta() -> dict:
@@ -73,38 +69,28 @@ async def main() -> None:
     # 1. Prepare doc_meta for this specific runtime source
     doc_meta = _build_doc_meta()
 
-    # 2. （可选）构建底层 RAG 工具，仅供调试使用；
-    #    Product Info Orchestrator 父 Agent 本身只会暴露 CreateAndRunAgentTool，
-    #    真正的 kb_query / kb_page_context / vlm_image_query 等工具仅对子 Agent 可见。
-    _tools = build_rag_agent_tools(doc_meta)
-
-    # 3. 构建 Product Info Orchestrator 父 Agent
-    #    - 内部会注入 DEFAULT_PRODUCT_INFO_SCHEMA 并使用 CoT 方式拆解子 Agent；
-    #    - 父 Agent 自己只具备 create_and_run_agent 工具能力；
-    #    - 若未显式传入 llm，将在内部基于 DASHSCOPE_API_KEY / 环境变量自动构建默认 Qwen ChatOpenAI 模型。
-    orchestrator = create_product_info_orchestrator_agent(
+    # 2. Run the deterministic pipeline (recommended)
+    llm = _build_default_llm()
+    pipeline = ProductInfoPipeline(
         doc_meta=doc_meta,
-        product_schema=DEFAULT_PRODUCT_INFO_SCHEMA,
-        include_history=False,
+        schema=DEFAULT_PRODUCT_INFO_SCHEMA,
+        llm=llm,
+        max_retries=2,
+        sub_agent_timeout=180.0,
+        max_concurrency=3,
         verbose=True,
     )
 
-    # 5. 定义交给父 Agent 的顶层任务说明
-    user_task = (
-        "Using the watch user manual in the current knowledge base, extract the complete product "
-        "information strictly following the provided Product Schema.\n"
-        "You are the parent Orchestrator Agent and may ONLY use `create_and_run_agent` to create "
-        "Sub Agents. Sub Agents may use RAG tools to access the document and return JSON fragments.\n"
-        "In the end, return ONLY a single JSON object that strictly matches the Schema, with no "
-        "extra explanation text."
-    )
+    print(f"Temp directory: {pipeline._tmp_dir}")
+    product_info = await pipeline.run()
 
-    result = await orchestrator.ainvoke({"input": user_task})
+    if product_info:
+        print("===== Product info from pipeline =====")
+        print(json.dumps(product_info, ensure_ascii=False, indent=2))
+    else:
+        print("===== Pipeline returned empty result =====")
 
-    # 6. Print the final JSON result from orchestrator
-    output = get_last_agent_output(result)
-    print("===== Agent product_info result =====")
-    print(output)
+    print(f"\nIntermediate files preserved at: {pipeline._tmp_dir}")
 
     # 为了避免退出时的 asyncio 清理日志淹没正常输出，这里额外等待片刻
     await asyncio.sleep(5)

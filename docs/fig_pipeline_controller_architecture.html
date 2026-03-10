@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pipeline Controller Architecture</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 40px 20px;
+            background: #FFFFFF;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            font-family: "Times New Roman", "SimSun", serif;
+        }
+        .figure-container {
+            text-align: center;
+        }
+        .figure-caption {
+            margin-top: 14px;
+            font-size: 12px;
+            color: #000000;
+            font-family: "Times New Roman", "SimSun", serif;
+            max-width: 600px;
+        }
+        .figure-note {
+            margin-top: 6px;
+            font-size: 11px;
+            color: #555555;
+            font-style: italic;
+            max-width: 600px;
+        }
+        svg text {
+            font-family: "Times New Roman", "SimSun", serif;
+        }
+    </style>
+</head>
+<body>
+    <div class="figure-container">
+        <svg width="620" height="700" viewBox="0 0 620 700" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+                <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto" fill="#333333">
+                    <polygon points="0 0, 8 3, 0 6"/>
+                </marker>
+                <marker id="arrow-bold" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto" fill="#000000">
+                    <polygon points="0 0, 10 3.5, 0 7"/>
+                </marker>
+            </defs>
+
+            <!-- ============================================ -->
+            <!-- Layer 1: 领域模型 Schema -->
+            <!-- ============================================ -->
+            <rect x="210" y="20" width="200" height="46" rx="4" ry="4" fill="#FFFFFF" stroke="#000000" stroke-width="1.5"/>
+            <text x="310" y="39" text-anchor="middle" font-size="13" fill="#000000" font-weight="bold">领域模型 S</text>
+            <text x="310" y="55" text-anchor="middle" font-size="11" fill="#333333">(概念域定义)</text>
+
+            <!-- ============================================ -->
+            <!-- Layer 2: 流水线控制器 -->
+            <!-- ============================================ -->
+            <rect x="75" y="115" width="470" height="115" rx="4" ry="4" fill="#F5F5F5" stroke="#000000" stroke-width="1.5" stroke-dasharray="6,3"/>
+            <text x="310" y="133" text-anchor="middle" font-size="11" fill="#333333" font-style="italic">流水线控制器 (Pipeline Controller)</text>
+
+            <rect x="100" y="145" width="200" height="38" rx="4" ry="4" fill="#FFFFFF" stroke="#000000" stroke-width="1.5"/>
+            <text x="200" y="169" text-anchor="middle" font-size="13" fill="#000000">确定性流程编排逻辑</text>
+
+            <rect x="355" y="145" width="170" height="38" rx="4" ry="4" fill="#FFFFFF" stroke="#000000" stroke-width="1.5"/>
+            <text x="440" y="169" text-anchor="middle" font-size="13" fill="#000000">结果合并模块</text>
+
+            <!-- ============================================ -->
+            <!-- Layer 3: 子Agent池 -->
+            <!-- ============================================ -->
+            <rect x="30" y="285" width="560" height="120" rx="4" ry="4" fill="#F5F5F5" stroke="#000000" stroke-width="1.5" stroke-dasharray="6,3"/>
+            <text x="310" y="303" text-anchor="middle" font-size="11" fill="#333333" font-style="italic">任务特化子Agent池 (AgentPool)</text>
+
+            <rect x="50" y="313" width="110" height="44" rx="4" ry="4" fill="#FFFFFF" stroke="#000000" stroke-width="1.5"/>
+            <text x="105" y="331" text-anchor="middle" font-size="12" fill="#000000">发现子Agent</text>
+            <text x="105" y="347" text-anchor="middle" font-size="11" fill="#333333">(Discovery)</text>
+
+            <rect x="175" y="313" width="110" height="44" rx="4" ry="4" fill="#FFFFFF" stroke="#000000" stroke-width="1.5"/>
+            <text x="230" y="331" text-anchor="middle" font-size="12" fill="#000000">详情抽取 1</text>
+            <text x="230" y="347" text-anchor="middle" font-size="11" fill="#333333">(Extraction)</text>
+
+            <rect x="300" y="313" width="110" height="44" rx="4" ry="4" fill="#FFFFFF" stroke="#000000" stroke-width="1.5"/>
+            <text x="355" y="331" text-anchor="middle" font-size="12" fill="#000000">详情抽取 2</text>
+            <text x="355" y="347" text-anchor="middle" font-size="11" fill="#333333">(Extraction)</text>
+
+            <text x="425" y="340" text-anchor="middle" font-size="18" fill="#333333">…</text>
+
+            <rect x="450" y="313" width="120" height="44" rx="4" ry="4" fill="#FFFFFF" stroke="#000000" stroke-width="1.5"/>
+            <text x="510" y="331" text-anchor="middle" font-size="12" fill="#000000">详情抽取 N</text>
+            <text x="510" y="347" text-anchor="middle" font-size="11" fill="#333333">(Extraction)</text>
+
+            <!-- ============================================ -->
+            <!-- Layer 4: 基础图谱层 -->
+            <!-- ============================================ -->
+            <rect x="100" y="470" width="420" height="110" rx="4" ry="4" fill="#F5F5F5" stroke="#000000" stroke-width="1.5" stroke-dasharray="6,3"/>
+            <text x="310" y="488" text-anchor="middle" font-size="11" fill="#333333" font-style="italic">基础图谱层 (KnowledgeBase)</text>
+
+            <rect x="125" y="500" width="165" height="44" rx="4" ry="4" fill="#FFFFFF" stroke="#000000" stroke-width="1.5"/>
+            <text x="207" y="519" text-anchor="middle" font-size="12" fill="#000000">基础图谱 G_v1</text>
+            <text x="207" y="534" text-anchor="middle" font-size="11" fill="#333333">(实体 + 关系)</text>
+
+            <rect x="330" y="500" width="170" height="44" rx="4" ry="4" fill="#FFFFFF" stroke="#000000" stroke-width="1.5"/>
+            <text x="415" y="519" text-anchor="middle" font-size="12" fill="#000000">向量索引</text>
+            <text x="415" y="534" text-anchor="middle" font-size="11" fill="#333333">(语义检索)</text>
+
+            <!-- ============================================ -->
+            <!-- Layer 5: 输出结果 -->
+            <!-- ============================================ -->
+            <rect x="230" y="635" width="160" height="40" rx="4" ry="4" fill="#FFFFFF" stroke="#000000" stroke-width="2"/>
+            <text x="310" y="660" text-anchor="middle" font-size="13" fill="#000000" font-weight="bold">产品信息 I_D</text>
+
+            <!-- ============================================ -->
+            <!--  ARROWS (路径错开，避免交叉遮挡) -->
+            <!-- ============================================ -->
+
+            <!-- ① Schema -> PC (居中下连) -->
+            <path d="M 310 66 L 260 145" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+            <text x="268" y="102" text-anchor="middle" font-size="10" fill="#333333">注入结构约束</text>
+
+            <!-- ② PC -> 发现子Agent：从编排左侧出发，先下后左，避免与 ⑥ 水平段重叠 -->
+            <path d="M 165 183 L 165 268 L 105 268 L 105 313" fill="none" stroke="#333333" stroke-width="1.3" stroke-dasharray="5,3" marker-end="url(#arrow)"/>
+            <text x="118" y="248" text-anchor="middle" font-size="10" fill="#333333">创建并配置</text>
+
+            <!-- ③ PC -> 详情抽取N：从编排右侧出发，先下后右，走最右侧通道 -->
+            <path d="M 355 183 L 355 268 L 510 268 L 510 313" fill="none" stroke="#333333" stroke-width="1.3" stroke-dasharray="5,3" marker-end="url(#arrow)"/>
+            <text x="455" y="248" text-anchor="middle" font-size="10" fill="#333333">创建并配置</text>
+
+            <!-- ④ 发现子Agent -> 基础图谱：左侧垂直下，再进框 -->
+            <path d="M 55 357 L 55 535 L 125 535" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+            <text x="42" y="448" text-anchor="end" font-size="10" fill="#333333">语义检索</text>
+
+            <!-- ⑤ 发现子Agent -> 向量索引：经下方绕行，不占 ④ 的 x=85 通道 -->
+            <path d="M 105 357 L 105 455 L 415 455 L 415 500" fill="none" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+            <text x="258" y="450" text-anchor="middle" font-size="10" fill="#333333">向量查询</text>
+
+            <!-- ⑥ 发现子Agent -> Merge：左侧上行，经 y=235 水平段到合并模块（与 ②③ 错开） -->
+            <path d="M 105 313 L 105 235 L 440 235 L 440 183" fill="none" stroke="#333333" stroke-width="1.3" stroke-dasharray="5,3" marker-end="url(#arrow)"/>
+            <text x="258" y="228" text-anchor="middle" font-size="10" fill="#333333">返回实体列表</text>
+
+            <!-- ⑦ 详情抽取N -> Merge：右侧上行，经 y=255 水平段（在 ⑥ 下方，避免重叠） -->
+            <path d="M 510 313 L 510 255 L 460 255 L 460 183" fill="none" stroke="#333333" stroke-width="1.3" stroke-dasharray="5,3" marker-end="url(#arrow)"/>
+            <text x="518" y="278" text-anchor="start" font-size="10" fill="#333333">返回结构化结果</text>
+
+            <!-- ⑧ Merge -> Result：从合并模块下，单独通道 x=310 居中下（不与其他竖线重叠） -->
+            <path d="M 440 183 L 440 615 L 310 615 L 310 635" fill="none" stroke="#000000" stroke-width="2" marker-end="url(#arrow-bold)"/>
+            <text x="448" y="612" text-anchor="start" font-size="11" fill="#000000" font-weight="bold">输出</text>
+
+            <!-- ============================================ -->
+            <!-- 注释标注 -->
+            <!-- ============================================ -->
+            <text x="310" y="288" text-anchor="middle" font-size="9" fill="#777777" font-style="italic">(各子Agent均同理)</text>
+            <text x="310" y="458" text-anchor="middle" font-size="9" fill="#777777" font-style="italic">(各子Agent均检索图谱层，此处仅示意)</text>
+        </svg>
+
+        <div class="figure-caption">
+            <strong>Fig. 1:</strong> Multi-agent pipeline architecture for knowledge graph-driven product information extraction
+        </div>
+        <div class="figure-note">
+            Note: Dashed arrows from the orchestration logic and to the merge module apply to all sub-agents;
+            solid arrows to the KnowledgeBase layer apply to all sub-agents likewise.
+        </div>
+    </div>
+</body>
+</html>

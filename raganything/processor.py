@@ -552,7 +552,7 @@ class ProcessorMixin:
 
     def _build_doc_meta_for_product_agent(self, doc_id: str) -> dict:
         """
-        Build doc_meta dict for create_product_info_orchestrator_agent.
+        Build doc_meta dict for ProductInfoPipeline.
         Uses current processor config (working_dir). parsed_dir is omitted
         unless available on config, so PageContextTool may not be registered.
         """
@@ -568,30 +568,33 @@ class ProcessorMixin:
 
     async def _extract_product_info(self, doc_id: str, schema_template: dict) -> dict:
         """
-        Extract product information using the Product Info Orchestrator Agent.
-        The agent uses RAG tools and sub-agents to fill the schema; result is
-        parsed from the agent output and returned as a dict.
+        Extract product information using the deterministic ProductInfoPipeline.
+
+        Each sub-agent writes its result to a JSON file on disk; the pipeline
+        merges all files into a single dict at the end.  Includes per-step
+        retry, timeout, and automatic text-fallback recovery.
         """
-        from agent import create_product_info_orchestrator_agent, get_last_ai_message_content
+        from agent.pipeline import ProductInfoPipeline
+        from agent.agent import _build_default_llm
 
         doc_meta = self._build_doc_meta_for_product_agent(doc_id)
-        orchestrator = create_product_info_orchestrator_agent(
+        llm = _build_default_llm()
+        pipeline = ProductInfoPipeline(
             doc_meta=doc_meta,
-            product_schema=schema_template,
+            schema=schema_template,
+            llm=llm,
+            max_retries=2,
+            sub_agent_timeout=180.0,
+            max_concurrency=3,
             verbose=getattr(self.config, "product_info_agent_verbose", False),
-            stream_mode="values",
         )
-        user_task = (
-            "Using the document(s) in the current knowledge base, extract the complete product "
-            "information strictly following the provided Product Schema.\n"
-            "You are the parent Orchestrator Agent and may ONLY use `create_and_run_agent` to create "
-            "Sub Agents. Sub Agents may use RAG tools to access the document and return JSON fragments.\n"
-            "In the end, return ONLY a single JSON object that strictly matches the Schema, with no "
-            "extra explanation text."        
+        result = await pipeline.run()
+        self.logger.info(
+            "[doc_id=%s] Pipeline finished, buffer_keys=%s",
+            doc_id,
+            list(result.keys()),
         )
-        result = await orchestrator.ainvoke({"input": user_task})
-        last_output = get_last_ai_message_content(result) or ""
-        return self._robust_json_parse(last_output)
+        return result
 
     async def _merge_product_info_into_v2_graph(
         self,
