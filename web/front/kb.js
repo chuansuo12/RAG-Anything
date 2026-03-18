@@ -357,28 +357,26 @@ export async function regenerateCurrentKnowledgeBase() {
     return;
   }
   const includeV2 = (appState.kbVersion || kbVersionSelectEl?.value || "v1") === "v2";
-  if (!includeV2) {
-    const ok = confirm("确定要重新生成索引吗？\n\n该操作会重建 v1 索引。");
-    if (!ok) return;
-  }
+  const confirmMsg = includeV2
+    ? "确定要用 DKE Agent 重新提取领域知识吗？\n\n该操作会重新运行领域知识提取，耗时较长。"
+    : "确定要重新生成索引吗？\n\n该操作会重建 v1 索引。";
+  if (!confirm(confirmMsg)) return;
+
   try {
     setStatus(
-      includeV2 ? "生成 v2 中..." : "重新生成中...",
+      includeV2 ? "提取领域知识中..." : "重新生成中...",
       "bg-amber-500/10 text-amber-300 border-amber-400/30 px-2 py-1 rounded-full border text-xs",
     );
     if (kbRegenerateBtn) kbRegenerateBtn.disabled = true;
 
     let res;
     if (includeV2) {
-      // v2 模式：只生成/更新 v2（不重建 v1）
-      const fd = new FormData();
-      fd.append("force_v1_then_v2", "false");
-      res = await fetchJSON(`/api/docs/${encodeURIComponent(docId)}/generate-v2`, {
+      // v2 模式：使用 DomainKnowledgeExtractionAgent 提取领域知识
+      res = await fetchJSON(`/api/docs/${encodeURIComponent(docId)}/extract-domain`, {
         method: "POST",
-        body: fd,
       });
     } else {
-      // v1 模式：重建 v1
+      // v1 模式：重建 v1 索引
       const fd = new FormData();
       fd.append("include_v2", "false");
       res = await fetchJSON(`/api/docs/${encodeURIComponent(docId)}/regenerate`, {
@@ -387,13 +385,19 @@ export async function regenerateCurrentKnowledgeBase() {
       });
     }
 
-    const meta = res.meta || {};
-    updateKbDetail(meta);
+    if (!includeV2) {
+      const meta = res.meta || {};
+      updateKbDetail(meta);
+    } else {
+      // 重新加载知识库详情以刷新 product-schema 面板
+      const meta = await fetchJSON(`/api/docs/${encodeURIComponent(docId)}`);
+      updateKbDetail(meta);
+    }
     await loadDocs();
-    setStatus(includeV2 ? "v2 生成完成" : "重新生成完成");
+    setStatus(includeV2 ? "领域知识提取完成" : "重新生成完成");
   } catch (e) {
     console.error(e);
-    alert(e.message || (includeV2 ? "生成 v2 失败" : "重新生成失败"));
+    alert(e.message || (includeV2 ? "领域知识提取失败" : "重新生成失败"));
     setStatus(
       "错误",
       "bg-red-500/10 text-red-300 border-red-400/30 px-2 py-1 rounded-full border text-xs",

@@ -1,0 +1,69 @@
+{
+  "product": {
+    "name": null,
+    "image": [],
+    "brand": null,
+    "offers": [],
+    "description": null
+  },
+  "components": [
+    {
+      "name": null,
+      "description": null,
+      "attributes": [
+        {
+          "name": null,
+          "value": null,
+          "unit": null,
+          "description": null,
+          "source": null
+        }
+      ]
+    }
+  ],
+  "features": [
+    {
+      "name": null,
+      "description": null,
+      "component_name": null,
+      "parameters": [
+        {
+          "name": null,
+          "value": null,
+          "unit": null,
+          "description": null,
+          "source": null
+        }
+      ],
+      "attributes": [
+        {
+          "name": null,
+          "value": null,
+          "unit": null,
+          "description": null,
+          "source": null
+        }
+      ]
+    }
+  ],
+  "parameters": [
+    {
+      "name": null,
+      "value": null,
+      "unit": null,
+      "description": null,
+      "scope_type": null,
+      "source": null
+    }
+  ],
+  "attributes": [
+    {
+      "name": null,
+      "value": null,
+      "unit": null,
+      "description": null,
+      "scope_type": null,
+      "source": null
+    }
+  ]
+}

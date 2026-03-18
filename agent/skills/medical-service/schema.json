@@ -1,0 +1,61 @@
+{
+  "service": {
+    "name": null,
+    "department": null,
+    "icd_codes": [],
+    "description": null,
+    "applicable_population": null,
+    "service_duration": null
+  },
+  "procedures": [
+    {
+      "name": null,
+      "description": null,
+      "procedure_code": null,
+      "duration": null,
+      "required_equipment": [],
+      "steps": [],
+      "parameters": [
+        {
+          "name": null,
+          "value": null,
+          "unit": null,
+          "description": null,
+          "source": null
+        }
+      ]
+    }
+  ],
+  "medications": [
+    {
+      "name": null,
+      "generic_name": null,
+      "dosage": null,
+      "unit": null,
+      "route": null,
+      "frequency": null,
+      "duration": null,
+      "indication": null,
+      "source": null
+    }
+  ],
+  "diagnostic_criteria": [
+    {
+      "name": null,
+      "description": null,
+      "threshold": null,
+      "unit": null,
+      "test_method": null,
+      "source": null
+    }
+  ],
+  "contraindications": [
+    {
+      "name": null,
+      "description": null,
+      "severity": null,
+      "affected_population": null,
+      "source": null
+    }
+  ]
+}

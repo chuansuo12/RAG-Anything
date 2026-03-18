@@ -119,7 +119,11 @@ async def get_doc_pdf(doc_id: str) -> FileResponse:
 @router.get("/{doc_id}/product-schema")
 async def get_doc_product_schema(doc_id: str) -> FileResponse:
     """
-    返回该知识库 v2 生成的产品信息（product info.json）。
+    返回该知识库的结构化领域知识 JSON。
+
+    查找顺序：
+    1. domain_knowledge.json（DomainKnowledgeExtractionAgent 输出，优先）
+    2. rag_storage_v2/product info.json（旧版 generate_product_schema_v2 输出，兼容）
     """
     meta = _read_json(_doc_meta_path(doc_id), default=None)
     if not isinstance(meta, dict):
@@ -127,6 +131,16 @@ async def get_doc_product_schema(doc_id: str) -> FileResponse:
     if meta.get("status") != "ready":
         raise HTTPException(status_code=400, detail="知识库尚未就绪，无法获取 product schema")
 
+    # 1. DKE Agent 输出（新）
+    dk_path = (_doc_dir(doc_id) / "domain_knowledge.json").resolve()
+    if dk_path.exists():
+        return FileResponse(
+            dk_path,
+            media_type="application/json",
+            filename="domain_knowledge.json",
+        )
+
+    # 2. 旧 v2 product info（兼容）
     v2_dir = _resolve_working_dir_for_version(meta, "v2")
     if not v2_dir:
         raise HTTPException(status_code=404, detail="未找到 v2 工作目录")
@@ -480,3 +494,60 @@ async def regenerate_index(
     _write_json(_doc_meta_path(doc_id), meta)
     return {"doc_id": doc_id, "meta": meta}
 
+
+@router.post("/{doc_id}/extract-domain")
+async def extract_domain_knowledge(doc_id: str) -> Dict[str, Any]:
+    """
+    使用 DomainKnowledgeExtractionAgent 为指定知识库提取结构化领域知识。
+
+    Agent 自动识别文档类型（product-knowledge / medical-service），激活对应 skill，
+    并将结构化 JSON 写入 runtime/source/<doc_id>/domain_knowledge.json。
+
+    结果可通过 GET /api/docs/{doc_id}/product-schema 读取。
+    """
+    meta = _read_json(_doc_meta_path(doc_id), default=None)
+    if not isinstance(meta, dict):
+        raise HTTPException(status_code=404, detail="知识库不存在")
+    if meta.get("status") != "ready":
+        raise HTTPException(status_code=400, detail="知识库尚未就绪，无法提取领域知识")
+
+    # 优先使用 v2 工作目录，以便 RAG 工具访问更完整的知识图谱
+    working_dir = _resolve_working_dir_for_version(meta, "v2") or meta.get("working_dir")
+    if not working_dir or not Path(str(working_dir)).exists():
+        working_dir = meta.get("working_dir")
+    if not working_dir:
+        raise HTTPException(status_code=400, detail="无法确定工作目录，请先构建知识库索引")
+
+    parsed_dir = meta.get("parsed_dir") or ""
+    output_path = _doc_dir(doc_id) / "domain_knowledge.json"
+
+    doc_agent_meta = {
+        "doc_id": doc_id,
+        "working_dir": str(working_dir),
+        "parsed_dir": str(parsed_dir),
+        "kb_version": "v2",
+    }
+
+    from agent.agent import _build_default_llm
+    from agent.domain_agent import DomainKnowledgeExtractionAgent
+
+    llm = _build_default_llm()
+    agent = DomainKnowledgeExtractionAgent(
+        doc_meta=doc_agent_meta,
+        llm=llm,
+        output_path=output_path,
+    )
+
+    try:
+        result = await agent.run()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"领域知识提取失败: {exc}") from exc
+
+    meta["domain_knowledge_path"] = str(output_path)
+    _write_json(_doc_meta_path(doc_id), meta)
+
+    return {
+        "doc_id": doc_id,
+        "output_path": str(output_path),
+        "keys": list(result.keys()) if isinstance(result, dict) else [],
+    }
