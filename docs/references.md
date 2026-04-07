@@ -48,11 +48,11 @@
 
 [24] SHI W, LV Q, TANG H, et al. MPMQA: multimodal question answering on product manuals[EB/OL]. arXiv:2309.13524, 2023.
 
-[25] 刘峤, 李杨, 段宏, 等. 知识图谱构建技术综述[J]. 计算机研究与发展, 2016, 53(3): 582-600.
+[25]刘峤,李杨,段宏,等.知识图谱构建技术综述[J].计算机研究与发展, 2016, 53(3): 582-600.
 
-[26] 漆桂林, 高桓, 吴天星. 知识图谱研究进展[J]. 情报工程, 2017, 3(1): 4-25.
+[26]漆桂林,高桓,吴天星.知识图谱研究进展[J].情报工程, 2017, 3(1): 4-25.
 
-[27] 王昊奋, 漆桂林, 陈华钧. 知识图谱：方法、实践与应用[M]. 北京: 电子工业出版社, 2019.
+[27]王昊奋,漆桂林,陈华钧.知识图谱：方法、实践与应用[M].北京: 电子工业出版社, 2019.
 
 [28] ACHIAM J, ADLER S, AGARWAL S, et al. GPT-4 technical report[EB/OL]. arXiv:2303.08774, 2023.
 
@@ -62,9 +62,9 @@
 
 [31] SUN Z, HU W, ZHANG Q, et al. Bootstrapping entity alignment with knowledge graph embedding[C]// Proceedings of IJCAI 2018. 2018: 4396-4402.
 
-[32] 刘知远, 孙茂松, 林衍凯, 等. 知识表示学习研究进展[J]. 计算机研究与发展, 2016, 53(2): 247-261.
+[32]刘知远,孙茂松,林衍凯,等.知识表示学习研究进展[J].计算机研究与发展, 2016, 53(2): 247-261.
 
-[33] 高阳, 李沐曦, 齐麟, 等. 检索增强生成综述[J]. 软件学报, 2024, 35(1): 1-28.
+[33]高阳,李沐曦,齐麟,等.检索增强生成综述[J].软件学报, 2024, 35(1): 1-28.
 
 [34] LI J, TANG J, ZHAO W X, et al. Survey of hallucination in natural language generation[J]. ACM Computing Surveys, 2023, 55(12): 1-38.
 
@@ -80,7 +80,7 @@
 
 [40] MIN S, KRISHNA K, LYU X, et al. FActScore: fine-grained atomic evaluation of factual precision in long form text generation[C]// Proceedings of EMNLP 2023. 2023: 12076-12100.
 
-[41] 赵鑫, 陈思颖, 戴晓懿, 等. 大语言模型综述[J]. 中文信息学报, 2023, 37(6): 1-20.
+[41]赵鑫,陈思颖,戴晓懿,等.大语言模型综述[J].中文信息学报, 2023, 37(6): 1-20.
 
 [42] YANG L, CHEN H, LI Z, et al. SAC-KG: exploiting large language models as skilled automatic constructors for domain knowledge graphs[C]// Proceedings of ACL 2024. 2024.
 
